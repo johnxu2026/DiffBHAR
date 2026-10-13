@@ -1,0 +1,3 @@
+[submodule "external/BHAR_codes_artifact"]
+	path = external/BHAR_codes_artifact
+	url = https://github.com/SLDGroup/BHAR_codes_artifact.git

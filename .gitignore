@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+# experiment outputs and data stay out of git
+saved_data*/
+results/
+data/
+*.pth
+*.pkl
+*.pickle
+*.npy
