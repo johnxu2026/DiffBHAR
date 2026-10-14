@@ -77,7 +77,8 @@ def get_pamap2(data_dir):
         inner = find(data_dir, "PAMAP2_Dataset.zip")
         if inner:
             zipfile.ZipFile(inner).extractall(os.path.dirname(inner))
-    prot = os.path.dirname(find(data_dir, "subject101.dat"))
+    # the zip also has an "Optional" folder with a few subjects; BHAR uses "Protocol"
+    prot = find(data_dir, "Protocol")
     log(f"preprocessing {prot} with BHAR's preprocess_PAMAP2 (100 Hz -> 25 Hz) ...")
     preprocess_PAMAP2(prot)
     return os.path.join(prot, "preprocessed_data")
