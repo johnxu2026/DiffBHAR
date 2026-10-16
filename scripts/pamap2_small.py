@@ -135,7 +135,7 @@ def pretrain(clf, Xn, y, w, epochs, lr=2e-3):
     starts = np.arange(0, len(y) - w - 1, w // 2)
     idx = torch.tensor(starts)[:, None] + torch.arange(w)[None]
     Xw = torch.tensor(Xn)[idx]                          # [M, w, 9]
-    yw = torch.tensor(y)[starts + w]                    # label of the step after the window
+    yw = torch.tensor(y)[starts + w - 1]                # last label in the window, as in BHAR
     A = torch.zeros(len(starts), clf.b, dtype=Xw.dtype)
     opt = torch.optim.Adam(clf.parameters(), lr=lr)
     for _ in range(epochs):
