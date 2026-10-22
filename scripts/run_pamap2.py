@@ -1,7 +1,7 @@
-"""Small PAMAP2 experiment: train the acquisition policy on the classification loss
+"""PAMAP2 experiment: train the acquisition policy on the classification loss
 instead of BHAR's active-region objective.
 
-All three methods use the same energy model (BHAR's harvester and sensor parameters),
+All methods use the same energy model (BHAR's harvester and sensor parameters),
 the same policy class or none, and the same small classifier:
 
   opp   opportunistic policy (send whenever there is energy)
@@ -9,11 +9,14 @@ the same policy class or none, and the same small classifier:
         objective (grid search stands in for BHAR's pattern search)
   e2e   same conservative policy, theta trained by gradient on the held-prediction
         cross-entropy through the differentiable simulator (DiffBHAR)
+  joint same policy, theta and classifier trained together in one backward per batch
 
 Each classifier is fine-tuned for the same number of epochs on its own policy's packets.
-One leave-one-subject-out fold per test subject, CPU only.
+One leave-one-subject-out fold per test subject.
 
-usage:  python scripts/pamap2_small.py --test_subjects 1 --seed 0
+usage:  python scripts/run_pamap2.py --exp NAME --test_subjects 1 --seed 0
+Everything goes to results/<date>_NAME/<run>.{log,json} and <run>_{summary,timeline}.png,
+where <run> is the test subjects, the seed and any setting that differs from its default.
 The first run downloads PAMAP2 (~650 MB) into data/ unless data/pamap2.zip already exists.
 """
 import argparse
@@ -393,6 +396,34 @@ def git_version():
     return git("rev-parse", "--short", "HEAD") + (" (uncommitted changes)" if dirty else "")
 
 
+def run_name(args, ap):
+    """Short file name: test subjects, seed, then only the settings that differ from the defaults."""
+    s = sorted(args.test_subjects)
+    name = ["all" if s == list(range(1, 9)) else "s" + "-".join(map(str, s)), f"seed{args.seed}"]
+    for k, short in [("finetune_epochs", "ft"), ("policy_epochs", "ep"), ("policy_lr", "plr"),
+                     ("clf_lr", "clr"), ("joint_lambda", "lam"), ("joint_init", "init"),
+                     ("train_segments", "seg"), ("pretrain_epochs", "pre"), ("device", "")]:
+        v = getattr(args, k)
+        if v != ap.get_default(k):
+            name.append(f"{short}{v:g}" if isinstance(v, float) else f"{short}{v}")
+    return "_".join(name)
+
+
+class Tee:
+    """Write to the terminal and to the run's log file."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, x):
+        for st in self.streams:
+            st.write(x)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test_subjects", type=int, nargs="+", default=[1])
@@ -415,16 +446,17 @@ def main():
     torch.set_default_dtype(torch.float64)
     cfg = SimConfig()            # BHAR's PAMAP2 settings: w=8, 6.6 uW leak, 200 uJ cap, 50 uJ/packet
 
-    pre = get_pamap2(args.data_dir)
     if args.out_dir is None:
         args.out_dir = os.path.join(ROOT, "results", time.strftime("%Y-%m-%d") + "_" + args.exp)
     os.makedirs(args.out_dir, exist_ok=True)
+    prefix = os.path.join(args.out_dir, run_name(args, ap))
+    logf = open(prefix + ".log", "w")
+    sys.stdout, sys.stderr = Tee(sys.stdout, logf), Tee(sys.stderr, logf)
+
+    pre = get_pamap2(args.data_dir)
     results, traces, ys, Hs, thetas = {}, {}, {}, {}, {}
     for s in args.test_subjects:
         results[s], traces[s], thetas[s], ys[s], Hs[s] = run_fold(pre, s, args, cfg)
-    tag = (f"pamap2_seed{args.seed}_s" + "-".join(map(str, args.test_subjects))
-           + f"_ft{args.finetune_epochs}_lam{args.joint_lambda:g}_{args.joint_init}_{args.device}")
-    prefix = os.path.join(args.out_dir, tag)
     with open(prefix + ".json", "w") as f:
         json.dump(dict(args=vars(args), command=" ".join(sys.argv), git=git_version(),
                        results=results, theta=thetas), f, indent=1)
@@ -436,7 +468,7 @@ def main():
         v = lambda k: np.mean([results[s][m][k] for s in results])  # noqa: E731
         print(f"{m:6s} {v('acc'):6.3f} {v('f1'):6.3f} {v('active_region'):6.3f} "
               f"{v('active_err'):6.3f} {v('passive_err'):6.3f} {v('pkt_per_s'):6.3f}")
-    print(f"\nsaved {prefix}.json, {prefix}_summary.png, {prefix}_timeline.png")
+    print(f"\nsaved {prefix}.log/.json/_summary.png/_timeline.png")
     log("done")
 
 
