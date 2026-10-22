@@ -26,10 +26,10 @@ the classification loss), one leave-one-subject-out fold, CPU only.
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install numpy scipy pandas matplotlib
-python scripts/pamap2_small.py --test_subjects 1      # downloads PAMAP2 into data/ on first run
+python scripts/pamap2_small.py --exp smoke --test_subjects 1   # downloads PAMAP2 into data/ on first run
 ```
 
-Outputs go to `results/`: a JSON with all metrics, `*_summary.png`, `*_timeline.png`.
+Outputs go to `results/<date>_<exp>/`: a JSON with all metrics plus the git commit and command, `*_summary.png`, `*_timeline.png`.
 
 ## Roadmap
 

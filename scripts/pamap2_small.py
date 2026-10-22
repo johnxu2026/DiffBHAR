@@ -20,6 +20,7 @@ import argparse
 import itertools
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.request
@@ -384,12 +385,21 @@ def plot(results, traces, y_te, H_te, path_prefix, cfg):
     fig.savefig(path_prefix + "_timeline.png", dpi=150)
 
 
+def git_version():
+    """Commit of the code that produced a result, with a note if there were uncommitted changes."""
+    def git(*a):
+        return subprocess.run(["git", "-C", ROOT, *a], capture_output=True, text=True).stdout.strip()
+    dirty = git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules")
+    return git("rev-parse", "--short", "HEAD") + (" (uncommitted changes)" if dirty else "")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test_subjects", type=int, nargs="+", default=[1])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--data_dir", default=os.path.join(ROOT, "data", "pamap2"))
-    ap.add_argument("--out_dir", default=os.path.join(ROOT, "results"))
+    ap.add_argument("--exp", required=True, help="experiment name; outputs go to results/<date>_<exp>/")
+    ap.add_argument("--out_dir", default=None, help="overrides results/<date>_<exp>/")
     ap.add_argument("--train_segments", type=int, default=64, help="100 s segments used for training")
     ap.add_argument("--search_segments", type=int, default=32, help="segments for BHAR's grid search")
     ap.add_argument("--pretrain_epochs", type=int, default=10)
@@ -406,6 +416,8 @@ def main():
     cfg = SimConfig()            # BHAR's PAMAP2 settings: w=8, 6.6 uW leak, 200 uJ cap, 50 uJ/packet
 
     pre = get_pamap2(args.data_dir)
+    if args.out_dir is None:
+        args.out_dir = os.path.join(ROOT, "results", time.strftime("%Y-%m-%d") + "_" + args.exp)
     os.makedirs(args.out_dir, exist_ok=True)
     results, traces, ys, Hs, thetas = {}, {}, {}, {}, {}
     for s in args.test_subjects:
@@ -414,7 +426,8 @@ def main():
            + f"_ft{args.finetune_epochs}_lam{args.joint_lambda:g}_{args.joint_init}_{args.device}")
     prefix = os.path.join(args.out_dir, tag)
     with open(prefix + ".json", "w") as f:
-        json.dump(dict(args=vars(args), results=results, theta=thetas), f, indent=1)
+        json.dump(dict(args=vars(args), command=" ".join(sys.argv), git=git_version(),
+                       results=results, theta=thetas), f, indent=1)
     plot(results, traces, ys, Hs, prefix, cfg)
 
     print("\n=== test results (mean over test subjects) ===")
