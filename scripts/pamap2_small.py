@@ -303,10 +303,10 @@ def run_fold(pre, test_subject, args, cfg):
     log(f"e2e   {out['e2e']}")
 
     # 4) joint: theta and classifier trained together, one backward per batch on
-    #    loss_task + lambda * loss_active; classifier starts from the dense-pretrained clf0
+    #    loss_task + lambda * loss_active; classifier starts from clf0 (dense) or clf_bhar
     jp = DiffConservativePolicy(torch.arange(3), 3, init=best[1], noise=True).to(dev)
     clf_j = SmallMSCT().double().to(dev)
-    clf_j.load_state_dict(clf0.state_dict())
+    clf_j.load_state_dict((clf0 if args.joint_init == "dense" else clf_bhar).state_dict())
     opt = torch.optim.Adam([dict(params=jp.parameters(), lr=args.policy_lr),
                             dict(params=clf_j.parameters(), lr=args.clf_lr)])
     for ep in range(args.policy_epochs):
@@ -398,6 +398,8 @@ def main():
     ap.add_argument("--policy_lr", type=float, default=10.0)
     ap.add_argument("--clf_lr", type=float, default=1e-3, help="classifier lr in joint training")
     ap.add_argument("--joint_lambda", type=float, default=1.0, help="weight of loss_active in joint training")
+    ap.add_argument("--joint_init", choices=["dense", "bhar"], default="dense",
+                    help="joint classifier start: dense-pretrained clf0 or BHAR-finetuned clf_bhar")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     torch.set_default_dtype(torch.float64)
@@ -409,7 +411,7 @@ def main():
     for s in args.test_subjects:
         results[s], traces[s], thetas[s], ys[s], Hs[s] = run_fold(pre, s, args, cfg)
     tag = (f"pamap2_seed{args.seed}_s" + "-".join(map(str, args.test_subjects))
-           + f"_ft{args.finetune_epochs}_lam{args.joint_lambda:g}")
+           + f"_ft{args.finetune_epochs}_lam{args.joint_lambda:g}_{args.joint_init}_{args.device}")
     prefix = os.path.join(args.out_dir, tag)
     with open(prefix + ".json", "w") as f:
         json.dump(dict(args=vars(args), results=results, theta=thetas), f, indent=1)
