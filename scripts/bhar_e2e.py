@@ -136,7 +136,9 @@ def main():
             p.requires_grad_(False)
 
         def clf(x, ages):
-            return model(x.float(), ages.float()).double()
+            # cuDNN's LSTM has no backward in eval mode; we need gradients w.r.t. the inputs only
+            with torch.backends.cudnn.flags(enabled=False):
+                return model(x.float(), ages.float()).double()
 
         pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, noise=True).to(dev)
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
