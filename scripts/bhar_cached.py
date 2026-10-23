@@ -1,4 +1,5 @@
-"""Print BHAR's cached test results (saved_data_cached from Zenodo) per method.
+"""Print BHAR's test results per method: cached ones from Zenodo (saved_data_cached) or
+our reruns of BHAR's own code (saved_data, see scripts/bhar_posttrain.sh).
 
 Each results_seed{s}.pickle maps subject -> (f1, acc, active_region, passive_region,
 active_error, passive_error), written at the end of the artifact's train_har_policy.py.
@@ -13,7 +14,7 @@ import pickle
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CACHE = os.path.join(ROOT, "external", "BHAR_codes_artifact", "saved_data_cached", "results")
+ART = os.path.join(ROOT, "external", "BHAR_codes_artifact")
 FIELDS = ["f1", "acc", "R_active", "R_passive", "eps_a", "eps_p"]
 
 
@@ -33,9 +34,11 @@ def main():
     ap.add_argument("--arch", default="tinyhar")
     ap.add_argument("--methods", nargs="*", default=None, help="default: all non-ablation methods")
     ap.add_argument("--per_subject", action="store_true")
+    ap.add_argument("--rerun", action="store_true", help="read saved_data (our reruns) instead of saved_data_cached")
     args = ap.parse_args()
 
-    base = os.path.join(CACHE, args.dataset, args.arch)
+    base = os.path.join(ART, "saved_data" if args.rerun else "saved_data_cached", "results",
+                        args.dataset, args.arch)
     methods = args.methods or sorted(m for m in os.listdir(base)
                                      if "ablation" not in m and "classifier" not in m)
     print(f"{args.dataset} / {args.arch}: mean over subjects, then mean +- std over seeds")
