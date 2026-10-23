@@ -1,15 +1,20 @@
 """Train BHAR's conservative policy parameters with gradients instead of pattern search,
 inside BHAR's own PAMAP2 + TinyHAR setup, and save them where BHAR's code will pick them up.
 
-For each test subject: same train sequence as train_har_policy.py (same seed), theta starts
-from BHAR's learned policy, the classifier is BHAR's finetuned TinyHAR (frozen), and theta is
-trained on the held-prediction loss (diffbhar.pipeline.run_e2e) over random 100 s segments,
-like BHAR's own policy training. Then run BHAR's finetuning and evaluation on the new theta:
+For each test subject: same train sequence as train_har_policy.py (same seed), the classifier
+(TinyHAR) is frozen, and theta is trained on the held-prediction loss (diffbhar.pipeline.run_e2e)
+over random 100 s segments, like BHAR's own policy training. Two starting points:
 
-    python scripts/bhar_e2e.py --seed 0
-    bash scripts/bhar_posttrain.sh conservative 0 scratch e2e
+  --init bhar: BHAR's learned theta + BHAR's finetuned classifier (gradient refinement of BHAR;
+               needs BHAR's scratch run first: bash scripts/bhar_posttrain.sh conservative SEED scratch)
+  --init zero: theta = (0, 0) like BHAR's pattern search + the cached pretrained classifier
+               (nothing from BHAR's policy search; replaces it)
 
-Needs BHAR's scratch run first (bash scripts/bhar_posttrain.sh conservative SEED scratch).
+Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
+
+    python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
+    bash scripts/bhar_posttrain.sh conservative 0 scratch zero/e2e
+
 Use the artifact's own venv.
 """
 import argparse
@@ -43,8 +48,15 @@ SEG = 100 * 25                     # BHAR's policy training segment, 100 s
 CKPT = os.path.join(ART, "saved_data", "checkpoints", "pamap2")
 BHAR_POLICY = os.path.join(CKPT, "conservative-asynchronous_single_sensor")
 BHAR_CLF = os.path.join(CKPT, "tinyhar", "conservative-asynchronous_multisensor_time_context")
-# where BHAR looks for the policy when run with logging prefix e2e/... (see bhar_posttrain.sh)
-OUT_POLICY = os.path.join(CKPT, "tinyhar", "conservative-asynchronous_single_sensor")
+PRETRAINED_CLF = os.path.join(ART, "saved_data_cached", "checkpoints", "pamap2", "tinyhar",
+                              "multisensor_classifier_window_8_acc")
+
+
+def out_policy_dir(tag):
+    """Where BHAR looks for the policy when run with logging prefix <tag>/<method>:
+    two levels above pamap2/tinyhar/<tag>/<method> (train_har_policy.py, dataset_level_dir)."""
+    level = os.path.dirname(os.path.dirname(os.path.join("pamap2", "tinyhar", tag, "method")))
+    return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
 def train_sequence(test_subject, seed):
@@ -85,18 +97,23 @@ def main():
     ap.add_argument("--segments", type=int, default=64, help="100 s segments per epoch")
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=10.0)
+    ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
+    ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
+    out_dir = out_policy_dir(args.tag)
+    if out_dir == BHAR_POLICY:
+        sys.exit("this tag would overwrite BHAR's own policy files")
     torch.set_default_dtype(torch.float64)
     dev = torch.device(args.device)
-    logger = init_logger(f"pamap2/tinyhar/e2e/policy_train_seed{args.seed}")
+    logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
     logger.info(str(vars(args)))
 
     cfg = SimConfig()
     ehs = EnergyHarvestingSensor(EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
                                  cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                  cfg.policy_frequency, cfg.init_energy)
-    os.makedirs(OUT_POLICY, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     for s in args.subjects:
         torch.manual_seed(args.seed)
@@ -104,12 +121,16 @@ def main():
         name = f"[{s}]_seed{args.seed}"
         X, y = train_sequence(s, args.seed)
 
-        with open(os.path.join(BHAR_POLICY, f"policy_{name}.pkl"), "rb") as f:
-            th0 = pickle.load(f)["best"]
-        th0 = [[float(v) for v in th0[bp]] for bp in BODY_PARTS]
+        if args.init == "bhar":
+            with open(os.path.join(BHAR_POLICY, f"policy_{name}.pkl"), "rb") as f:
+                th0 = pickle.load(f)["best"]
+            th0 = [[float(v) for v in th0[bp]] for bp in BODY_PARTS]
+            clf_path = os.path.join(BHAR_CLF, f"finetuned_classifier_{name}.pth")
+        else:
+            th0 = [[0.0, 0.0] for _ in BODY_PARTS]
+            clf_path = os.path.join(PRETRAINED_CLF, f"{name}.pth")
         model = model_builder(**KW).float().to(dev)
-        model.load_state_dict(torch.load(os.path.join(BHAR_CLF, f"finetuned_classifier_{name}.pth"),
-                                         map_location=dev)["model_state_dict"], strict=False)
+        model.load_state_dict(torch.load(clf_path, map_location=dev)["model_state_dict"], strict=False)
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
@@ -119,7 +140,7 @@ def main():
 
         pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, noise=True).to(dev)
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
-        logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, BHAR theta {th0}")
+        logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, init theta {th0}, classifier {clf_path}")
         for ep in range(args.epochs):
             losses = []
             for _ in range(args.segments // args.batch_size):
@@ -136,8 +157,8 @@ def main():
                         f"theta={pol.theta.detach().cpu().numpy().round(1).tolist()}")
 
         theta = pol.theta.detach().cpu().numpy().tolist()
-        with open(os.path.join(OUT_POLICY, f"policy_{name}.pkl"), "wb") as f:
-            pickle.dump({"best": dict(zip(BODY_PARTS, theta)), "bhar": dict(zip(BODY_PARTS, th0))}, f)
+        with open(os.path.join(out_dir, f"policy_{name}.pkl"), "wb") as f:
+            pickle.dump({"best": dict(zip(BODY_PARTS, theta)), "init": dict(zip(BODY_PARTS, th0))}, f)
         logger.info(f"subject {s}: saved theta {theta}")
 
 
