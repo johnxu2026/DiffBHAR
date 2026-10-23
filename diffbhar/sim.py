@@ -67,6 +67,7 @@ class SimOutput:
     a: torch.Tensor            # [N, J] executed transmit decisions, STE (forward in {0,1})
     feasible: torch.Tensor     # [N, J] bool, hard feasibility at the tick
     prob: torch.Tensor         # [N, J] policy probability (diagnostics)
+    logit: torch.Tensor        # [N, J] policy logit before noise; P(send) = sigmoid(logit)
     energy: torch.Tensor       # [N, L] energy trace (forward values)
     n_deaths: torch.Tensor     # [N]
 
@@ -102,7 +103,7 @@ def simulate(h, policy, cfg: SimConfig, max_p=None, train=True, record_energy=Fa
     p_short = torch.zeros(N, dtype=dt, device=dev)
     deaths = torch.zeros(N, dtype=torch.long, device=dev)
 
-    ticks, a_list, feas_list, prob_list = [], [], [], []
+    ticks, a_list, feas_list, prob_list, logit_list = [], [], [], [], []
     e_trace = [E] if record_energy else None
 
     for k in range(1, L):
@@ -160,6 +161,7 @@ def simulate(h, policy, cfg: SimConfig, max_p=None, train=True, record_energy=Fa
                 a_list.append(a)
                 feas_list.append(feas_hard)
                 prob_list.append(prob)
+                logit_list.append(logit)
         if record_energy:
             e_trace.append(E)
 
@@ -168,6 +170,7 @@ def simulate(h, policy, cfg: SimConfig, max_p=None, train=True, record_energy=Fa
         a=torch.stack(a_list, 1),
         feasible=torch.stack(feas_list, 1),
         prob=torch.stack(prob_list, 1),
+        logit=torch.stack(logit_list, 1),
         energy=torch.stack(e_trace, 1).detach() if record_energy else None,
         n_deaths=deaths,
     )

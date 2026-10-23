@@ -16,6 +16,13 @@ Joint training (--clf_lr > 0) also updates the classifier, on loss_task + lam * 
 (BHAR's finetuning loss); with --save_clf the trained classifier is written where BHAR looks for
 its finetuned one, so BHAR evaluates it as is instead of finetuning again.
 
+Score-function gradient (--rf > 0): the straight-through gradient only sees the immediate
+effect of a packet; the energy it spends shows up later, when some future packet is no longer
+feasible, and almost none of that reaches theta. With --rf, each segment is simulated --rf_k
+times with random send decisions (P(send) = sigmoid(logit)), and the decisions of runs that end
+with a lower loss over the whole segment are made more likely (REINFORCE with a leave-one-out
+baseline). This credits every decision with its full later effect, energy included.
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -31,6 +38,7 @@ import sys
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ART = os.path.join(ROOT, "external", "BHAR_codes_artifact")
@@ -120,6 +128,9 @@ def main():
     ap.add_argument("--clf_lr", type=float, default=0.0, help="> 0: joint training of theta and the classifier")
     ap.add_argument("--lam", type=float, default=1.0, help="weight of loss_active in joint training")
     ap.add_argument("--save_clf", action="store_true", help="joint: BHAR evaluates our classifier, no finetuning")
+    ap.add_argument("--ste", type=float, default=1.0, help="weight of the straight-through gradient")
+    ap.add_argument("--rf", type=float, default=0.0, help="> 0: weight of the score-function gradient")
+    ap.add_argument("--rf_k", type=int, default=4, help="random runs per segment for --rf")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -191,12 +202,21 @@ def main():
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
         for ep in range(args.epochs):
             losses, accs = [], []
+            k = args.rf_k if args.rf > 0 else 1
             for _ in range(args.segments // args.batch_size):
-                xb, yb, hb = (t.to(dev) for t in sample_batch(X, y, ehs, rng, args.batch_size))
+                xb, yb, hb = (t.to(dev).repeat_interleave(k, 0)
+                              for t in sample_batch(X, y, ehs, rng, args.batch_size // k))
                 pol.sensor_index = torch.arange(3, device=dev).repeat(len(yb))
                 o = run_e2e(xb, yb, hb, pol, clf, cfg, len(KW["activities"]), train=True)
                 opt.zero_grad()
-                loss = o.loss_task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
+                loss = args.ste * o.loss_task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
+                if args.rf > 0:
+                    ls = o.loss_seq.detach().view(-1, k)
+                    adv = (ls - (ls.sum(1, keepdim=True) - ls) / (k - 1)).view(-1)
+                    a, lg = o.sim.a.detach(), o.sim.logit
+                    # log-probability of the decisions that mattered (sensor free and charged)
+                    logp = o.sim.feasible * (a * F.logsigmoid(lg) + (1 - a) * F.logsigmoid(-lg))
+                    loss = loss + args.rf * (adv * logp.view(len(yb), -1).sum(1)).mean()
                 loss.backward()
                 opt.step()
                 with torch.no_grad():
