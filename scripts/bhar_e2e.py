@@ -3,7 +3,9 @@ inside BHAR's own PAMAP2 + TinyHAR setup, and save them where BHAR's code will p
 
 For each test subject: same train sequence as train_har_policy.py (same seed), the classifier
 (TinyHAR) is frozen, and theta is trained on the held-prediction loss (diffbhar.pipeline.run_e2e)
-over random 100 s segments, like BHAR's own policy training. Two starting points:
+over random 100 s segments, like BHAR's own policy training. Every --val_every epochs theta is
+scored on BHAR's validation sequence (held-prediction accuracy with the same frozen classifier) and
+the best one is kept, as BHAR keeps its best validated policy. Two starting points:
 
   --init bhar: BHAR's learned theta + BHAR's finetuned classifier (gradient refinement of BHAR;
                needs BHAR's scratch run first: bash scripts/bhar_posttrain.sh conservative SEED scratch)
@@ -59,18 +61,30 @@ def out_policy_dir(tag):
     return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
-def train_sequence(test_subject, seed):
-    """Train sequence [b, L, 3] (raw, as BHAR uses it) and labels, as in train_har_policy.py."""
+def sequences(test_subject, seed):
+    """Train and validation sequences, each ([b, L, 3] raw data, as BHAR uses it, and labels),
+    generated as in train_har_policy.py (same seed, train first, then val)."""
     kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT["pamap2"]), "preprocessed_data"),
               subjects=[s for s in SUBJECTS if s != test_subject], normalize=False)
-    ds = HARClassifierDataset(**kw, train=True, val=False)
-    data = np.concatenate(list(ds.raw_data.values()))
-    labels = np.concatenate(list(ds.raw_labels.values()))
+    dss = [HARClassifierDataset(**kw, train=True, val=False), HARClassifierDataset(**kw, train=False, val=True)]
+    cmap = dss[0].dataset_info["sensor_channel_map"]
     np.random.seed(seed)
-    X, y = generate_activity_sequence(data, labels, 10, 30, 25)
-    cmap = ds.dataset_info["sensor_channel_map"]
-    per_bp = [X[:, np.isin(ds.active_channels, cmap[bp]["acc"])] for bp in BODY_PARTS]
-    return np.stack(per_bp), y.astype(np.int64)
+    out = []
+    for ds in dss:
+        X, y = generate_activity_sequence(np.concatenate(list(ds.raw_data.values())),
+                                          np.concatenate(list(ds.raw_labels.values())), 10, 30, 25)
+        per_bp = [X[:, np.isin(ds.active_channels, cmap[bp]["acc"])] for bp in BODY_PARTS]
+        out.append((np.stack(per_bp), y.astype(np.int64)))
+    return out
+
+
+def harvest(x, ehs):
+    """[b, L, 3] raw data -> [b, L] harvested energy per step (J)."""
+    h = []
+    for i in range(len(BODY_PARTS)):
+        ehs.init_harvester(x[i])
+        h.append(ehs.e_harvest.copy())
+    return np.stack(h)
 
 
 def sample_batch(X, y, ehs, rng, n):
@@ -79,13 +93,9 @@ def sample_batch(X, y, ehs, rng, n):
     for _ in range(n):
         st = min(rng.integers(len(y)), len(y) - SEG)
         x = X[:, st:st + SEG]
-        h = []
-        for i in range(len(BODY_PARTS)):
-            ehs.init_harvester(x[i])
-            h.append(ehs.e_harvest.copy())
         xs.append(x)
         ys.append(y[st:st + SEG])
-        hs.append(np.stack(h))
+        hs.append(harvest(x, ehs))
     return torch.tensor(np.stack(xs)), torch.tensor(np.stack(ys)), torch.tensor(np.stack(hs))
 
 
@@ -97,6 +107,9 @@ def main():
     ap.add_argument("--segments", type=int, default=64, help="100 s segments per epoch")
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=10.0)
+    ap.add_argument("--scale", type=float, default=5.0, help="policy temperature: logit = (Delta - tau) / scale")
+    ap.add_argument("--kappa", type=float, default=5e-6, help="width (J) of the energy-feasibility surrogate")
+    ap.add_argument("--val_every", type=int, default=2, help="epochs between validation scores")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -109,17 +122,19 @@ def main():
     logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
     logger.info(str(vars(args)))
 
-    cfg = SimConfig()
+    cfg = SimConfig(feas_kappa=args.kappa)
     ehs = EnergyHarvestingSensor(EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
                                  cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                  cfg.policy_frequency, cfg.init_energy)
     os.makedirs(out_dir, exist_ok=True)
 
+    best_vals = []
     for s in args.subjects:
         torch.manual_seed(args.seed)
         rng = np.random.default_rng(args.seed)
         name = f"[{s}]_seed{args.seed}"
-        X, y = train_sequence(s, args.seed)
+        (X, y), (Xv, yv) = sequences(s, args.seed)
+        val = [torch.tensor(a)[None].to(dev) for a in (Xv, yv, harvest(Xv, ehs))]
 
         if args.init == "bhar":
             with open(os.path.join(BHAR_POLICY, f"policy_{name}.pkl"), "rb") as f:
@@ -147,9 +162,20 @@ def main():
             with torch.backends.cudnn.flags(enabled=False):
                 return model(x.float(), ages.float()).double()
 
-        pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, noise=True).to(dev)
+        def val_acc(theta):
+            """Held-prediction accuracy and packets/s/sensor on the whole validation sequence."""
+            pv = DiffConservativePolicy(torch.arange(3), 3, init=theta, scale=args.scale, noise=False).to(dev)
+            with torch.no_grad():
+                o = run_e2e(*val, pv, clf, cfg, len(KW["activities"]), train=False, counterfactual=False)
+            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs)
+
+        pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=True).to(dev)
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
-        logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, init theta {th0}, classifier {clf_path}")
+        logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, val {len(yv) / 25 / 60:.0f} min, "
+                    f"init theta {th0}, classifier {clf_path}")
+        acc, pkt = val_acc(th0)
+        best = (acc, -1, th0)
+        logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
         for ep in range(args.epochs):
             losses, accs = [], []
             for _ in range(args.segments // args.batch_size):
@@ -165,11 +191,19 @@ def main():
                 accs.append((o.preds == yb.cpu().numpy()).mean())
             logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} train_acc={np.mean(accs):.3f} "
                         f"theta={pol.theta.detach().cpu().numpy().round(1).tolist()}")
+            if (ep + 1) % args.val_every == 0 or ep + 1 == args.epochs:
+                theta = pol.theta.detach().cpu().numpy().tolist()
+                acc, pkt = val_acc(theta)
+                logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f}")
+                if acc > best[0]:
+                    best = (acc, ep, theta)
 
-        theta = pol.theta.detach().cpu().numpy().tolist()
         with open(os.path.join(out_dir, f"policy_{name}.pkl"), "wb") as f:
-            pickle.dump({"best": dict(zip(BODY_PARTS, theta)), "init": dict(zip(BODY_PARTS, th0))}, f)
-        logger.info(f"subject {s}: saved theta {theta}")
+            pickle.dump({"best": dict(zip(BODY_PARTS, best[2])), "init": dict(zip(BODY_PARTS, th0)),
+                         "best_val_acc": float(best[0]), "best_epoch": best[1]}, f)
+        best_vals.append(best[0])
+        logger.info(f"subject {s}: saved theta {best[2]} (val_acc {best[0]:.3f}, epoch {best[1]})")
+    logger.info(f"mean best val_acc over subjects {args.subjects}: {np.mean(best_vals):.4f}")
 
 
 if __name__ == "__main__":
