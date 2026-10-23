@@ -130,7 +130,14 @@ def main():
             th0 = [[0.0, 0.0] for _ in BODY_PARTS]
             clf_path = os.path.join(PRETRAINED_CLF, f"{name}.pth")
         model = model_builder(**KW).float().to(dev)
-        model.load_state_dict(torch.load(clf_path, map_location=dev)["model_state_dict"], strict=False)
+        # finetuned checkpoints hold BHAR's wrapper (TemporalContextModel): drop its prefix
+        sd = {k.removeprefix("multisensor_model."): v
+              for k, v in torch.load(clf_path, map_location=dev)["model_state_dict"].items()}
+        res = model.load_state_dict(sd, strict=False)
+        if res.unexpected_keys or len(res.missing_keys) == len(model.state_dict()):
+            sys.exit(f"classifier checkpoint does not match TinyHAR: {res}")
+        if res.missing_keys:
+            logger.info(f"not in checkpoint (kept at init, as in BHAR): {res.missing_keys}")
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
