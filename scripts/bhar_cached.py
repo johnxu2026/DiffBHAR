@@ -39,10 +39,11 @@ def main():
 
     base = os.path.join(ART, "saved_data" if args.rerun else "saved_data_cached", "results",
                         args.dataset, args.arch)
-    methods = args.methods or sorted(m for m in os.listdir(base)
-                                     if "ablation" not in m and "classifier" not in m)
+    found = {os.path.relpath(os.path.dirname(p), base)
+             for p in glob.glob(os.path.join(base, "**", "results_seed*.pickle"), recursive=True)}
+    methods = args.methods or sorted(m for m in found if "ablation" not in m and "classifier" not in m)
     print(f"{args.dataset} / {args.arch}: mean over subjects, then mean +- std over seeds")
-    print(f"{'method':52s} {'seeds':>5s} {'acc':>13s} {'F1':>13s} {'R_active':>8s} {'eps_a':>6s} {'eps_p':>6s}")
+    print(f"{'method':56s} {'seeds':>5s} {'acc':>13s} {'F1':>13s} {'R_active':>8s} {'eps_a':>6s} {'eps_p':>6s}")
     for m in methods:
         res = load(os.path.join(base, m))
         if not res:
@@ -50,7 +51,7 @@ def main():
         # [seeds, fields]: mean over subjects for each seed
         per_seed = np.stack([np.mean(list(r.values()), axis=0) for r in res.values()])
         mu, sd = per_seed.mean(0), per_seed.std(0)
-        print(f"{m:52s} {len(res):5d} {mu[1]:.3f}+-{sd[1]:.3f} {mu[0]:.3f}+-{sd[0]:.3f} "
+        print(f"{m:56s} {len(res):5d} {mu[1]:.3f}+-{sd[1]:.3f} {mu[0]:.3f}+-{sd[0]:.3f} "
               f"{mu[2]:8.3f} {mu[4]:6.3f} {mu[5]:6.3f}")
         if args.per_subject:
             subs = sorted(next(iter(res.values())))

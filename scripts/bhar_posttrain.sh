@@ -3,12 +3,15 @@
 # with the args of experiments/posttraining_scripts/*_time_context-pamap2.sh and the
 # cached pretrained classifiers. Use the artifact's own venv.
 #
-# usage:  bash scripts/bhar_posttrain.sh {conservative|opportunistic} SEED {cached|scratch}
+# usage:  bash scripts/bhar_posttrain.sh {conservative|opportunistic} SEED {cached|scratch} [TAG]
 #   cached:  reuse BHAR's learned policy and finetuned classifier (evaluation only)
 #   scratch: learn the policy (pattern search) and finetune the classifier again
-# results: external/BHAR_codes_artifact/saved_data/results/pamap2/tinyhar/<method>/results_seed<SEED>.pickle
+#   TAG:     run under <TAG>/<method>; BHAR then looks for the policy in
+#            saved_data/checkpoints/pamap2/tinyhar/conservative-asynchronous_single_sensor/
+#            (e.g. TAG=e2e after scripts/bhar_e2e.py wrote its theta there)
+# results: external/BHAR_codes_artifact/saved_data/results/pamap2/tinyhar/[TAG/]<method>/results_seed<SEED>.pickle
 set -e
-policy=$1; seed=$2; source=$3
+policy=$1; seed=$2; source=$3; tag=${4:+$4/}
 cd "$(dirname "$0")/../external/BHAR_codes_artifact/experiments"
 
 policy_args=()
@@ -21,7 +24,7 @@ fi
 
 python train_har_policy.py \
   --multisensor_checkpoint_prefix multisensor_classifier_window_8_acc \
-  --logging_prefix "$policy"-asynchronous_multisensor_time_context \
+  --logging_prefix "$tag$policy"-asynchronous_multisensor_time_context \
   --policy "$policy" \
   --model_type asynchronous_multisensor_time_context \
   --architecture tinyhar \
