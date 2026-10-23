@@ -142,7 +142,7 @@ def main():
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
         logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, init theta {th0}, classifier {clf_path}")
         for ep in range(args.epochs):
-            losses = []
+            losses, accs = [], []
             for _ in range(args.segments // args.batch_size):
                 xb, yb, hb = (t.to(dev) for t in sample_batch(X, y, ehs, rng, args.batch_size))
                 pol.sensor_index = torch.arange(3, device=dev).repeat(len(yb))
@@ -153,7 +153,8 @@ def main():
                 with torch.no_grad():
                     pol.theta.clamp_(-1000, 1000)      # BHAR's parameter bounds
                 losses.append(o.loss_task.item())
-            logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} "
+                accs.append((o.preds == yb.cpu().numpy()).mean())
+            logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} train_acc={np.mean(accs):.3f} "
                         f"theta={pol.theta.detach().cpu().numpy().round(1).tolist()}")
 
         theta = pol.theta.detach().cpu().numpy().tolist()
