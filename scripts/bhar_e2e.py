@@ -12,6 +12,10 @@ the best one is kept, as BHAR keeps its best validated policy. Two starting poin
   --init zero: theta = (0, 0) like BHAR's pattern search + the cached pretrained classifier
                (nothing from BHAR's policy search; replaces it)
 
+Joint training (--clf_lr > 0) also updates the classifier, on loss_task + lam * loss_active
+(BHAR's finetuning loss); with --save_clf the trained classifier is written where BHAR looks for
+its finetuned one, so BHAR evaluates it as is instead of finetuning again.
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -20,6 +24,7 @@ Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 Use the artifact's own venv.
 """
 import argparse
+import copy
 import os
 import pickle
 import sys
@@ -112,6 +117,9 @@ def main():
     ap.add_argument("--scale", type=float, default=5.0, help="policy temperature: logit = (Delta - tau) / scale")
     ap.add_argument("--kappa", type=float, default=5e-6, help="width (J) of the energy-feasibility surrogate")
     ap.add_argument("--val_every", type=int, default=2, help="epochs between validation scores")
+    ap.add_argument("--clf_lr", type=float, default=0.0, help="> 0: joint training of theta and the classifier")
+    ap.add_argument("--lam", type=float, default=1.0, help="weight of loss_active in joint training")
+    ap.add_argument("--save_clf", action="store_true", help="joint: BHAR evaluates our classifier, no finetuning")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -155,12 +163,12 @@ def main():
             sys.exit(f"classifier checkpoint does not match TinyHAR: {res}")
         if res.missing_keys:
             logger.info(f"not in checkpoint (kept at init, as in BHAR): {res.missing_keys}")
-        model.eval()
+        model.eval()                                   # no dropout, also when training it jointly
         for p in model.parameters():
-            p.requires_grad_(False)
+            p.requires_grad_(args.clf_lr > 0)
 
         def clf(x, ages):
-            # cuDNN's LSTM has no backward in eval mode; we need gradients w.r.t. the inputs only
+            # cuDNN's LSTM has no backward in eval mode
             with torch.backends.cudnn.flags(enabled=False):
                 return model(x.float(), ages.float()).double()
 
@@ -172,11 +180,14 @@ def main():
             return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs)
 
         pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=True).to(dev)
-        opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
+        groups = [dict(params=pol.parameters(), lr=args.lr)]
+        if args.clf_lr > 0:
+            groups.append(dict(params=model.parameters(), lr=args.clf_lr))
+        opt = torch.optim.Adam(groups)
         logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, val {len(yv) / 25 / 60:.0f} min, "
                     f"init theta {th0}, classifier {clf_path}")
         acc, pkt = val_acc(th0)
-        best = (acc, -1, th0)
+        best = (acc, -1, th0, copy.deepcopy(model.state_dict()))
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
         for ep in range(args.epochs):
             losses, accs = [], []
@@ -185,7 +196,8 @@ def main():
                 pol.sensor_index = torch.arange(3, device=dev).repeat(len(yb))
                 o = run_e2e(xb, yb, hb, pol, clf, cfg, len(KW["activities"]), train=True)
                 opt.zero_grad()
-                o.loss_task.backward()
+                loss = o.loss_task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
+                loss.backward()
                 opt.step()
                 with torch.no_grad():
                     pol.theta.clamp_(-1000, 1000)      # BHAR's parameter bounds
@@ -198,11 +210,17 @@ def main():
                 acc, pkt = val_acc(theta)
                 logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f}")
                 if acc > best[0]:
-                    best = (acc, ep, theta)
+                    best = (acc, ep, theta, copy.deepcopy(model.state_dict()))
 
         with open(os.path.join(out_dir, f"policy_{name}.pkl"), "wb") as f:
             pickle.dump({"best": dict(zip(BODY_PARTS, best[2])), "init": dict(zip(BODY_PARTS, th0)),
                          "best_val_acc": float(best[0]), "best_epoch": best[1]}, f)
+        if args.save_clf:
+            d = os.path.join(ART, "saved_data", "checkpoints", "pamap2", "tinyhar", args.tag,
+                             "conservative-asynchronous_multisensor_time_context")
+            os.makedirs(d, exist_ok=True)
+            torch.save({"model_state_dict": {"multisensor_model." + k: v for k, v in best[3].items()}},
+                       os.path.join(d, f"finetuned_classifier_{name}.pth"))
         best_vals.append(best[0])
         logger.info(f"subject {s}: saved theta {best[2]} (val_acc {best[0]:.3f}, epoch {best[1]})")
     logger.info(f"mean best val_acc over subjects {args.subjects}: {np.mean(best_vals):.4f}")
