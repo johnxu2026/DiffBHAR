@@ -61,12 +61,14 @@ def out_policy_dir(tag):
     return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
-def sequences(test_subject, seed):
-    """Train and validation sequences, each ([b, L, 3] raw data, as BHAR uses it, and labels),
-    generated as in train_har_policy.py (same seed, train first, then val)."""
+def sequences(test_subject, seed, test=False):
+    """Train and validation (and test) sequences, each ([b, L, 3] raw data, as BHAR uses it, and
+    labels), generated as in train_har_policy.py (same seed, in the order train, val, test)."""
     kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT["pamap2"]), "preprocessed_data"),
               subjects=[s for s in SUBJECTS if s != test_subject], normalize=False)
     dss = [HARClassifierDataset(**kw, train=True, val=False), HARClassifierDataset(**kw, train=False, val=True)]
+    if test:
+        dss.append(HARClassifierDataset(**dict(kw, subjects=[test_subject]), train=False, val=False))
     cmap = dss[0].dataset_info["sensor_channel_map"]
     np.random.seed(seed)
     out = []
