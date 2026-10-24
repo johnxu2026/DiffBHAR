@@ -30,6 +30,10 @@ epochs and lr as train_har_policy.py), then train theta for --epochs against it.
 --rand_ft N the first finetuning also uses the packets of N random thetas, so the classifier starts
 out used to fresh and old packets alike instead of favouring the policy it was finetuned on.
 
+Packet penalty (--pkt w > 0): adds w * packets/s/sensor (through the STE decisions) to the loss and
+validation keeps the theta with the best val_acc - w * packets/s. Sweeping w from the BHAR start
+traces an accuracy-vs-packets curve to compare with BHAR's single point.
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -173,6 +177,8 @@ def main():
                     help="> 0: alternate BHAR's classifier finetuning and --epochs of theta training")
     ap.add_argument("--rand_ft", type=int, default=0,
                     help="--rounds: random thetas (each parameter in [0, 400]) added to the first finetuning")
+    ap.add_argument("--pkt", type=float, default=0.0,
+                    help="weight of a packets/s/sensor penalty; validation then selects on val_acc - pkt * pkt/s")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -240,7 +246,7 @@ def main():
         logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, val {len(yv) / 25 / 60:.0f} min, "
                     f"init theta {th0}, classifier {clf_path}")
         acc, pkt = val_acc(th0)
-        best = (acc, -1, th0, copy.deepcopy(model.state_dict()))
+        best = (acc - args.pkt * pkt, -1, th0, copy.deepcopy(model.state_dict()))
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
         for ep in range(args.epochs * max(args.rounds, 1)):
             if args.rounds > 0 and ep % args.epochs == 0:
@@ -254,8 +260,8 @@ def main():
                     p.requires_grad_(args.clf_lr > 0)
                 acc, pkt = val_acc(theta)
                 logger.info(f"  round {ep // args.epochs}: classifier finetuned, val_acc={acc:.3f} pkt/s={pkt:.3f}")
-                if acc > best[0]:
-                    best = (acc, ep - 1, theta, copy.deepcopy(model.state_dict()))
+                if acc - args.pkt * pkt > best[0]:
+                    best = (acc - args.pkt * pkt, ep - 1, theta, copy.deepcopy(model.state_dict()))
             losses, accs = [], []
             k = args.rf_k if args.rf > 0 else 1
             for _ in range(args.segments // args.batch_size):
@@ -272,6 +278,8 @@ def main():
                     # log-probability of the decisions that mattered (sensor free and charged)
                     logp = o.sim.feasible * (a * F.logsigmoid(lg) + (1 - a) * F.logsigmoid(-lg))
                     loss = loss + args.rf * (adv * logp.view(len(yb), -1).sum(1)).mean()
+                if args.pkt > 0:
+                    loss = loss + args.pkt * o.sim.a.sum() / (o.sim.a.shape[0] * SEG / 25)
                 loss.backward()
                 opt.step()
                 with torch.no_grad():
@@ -284,8 +292,8 @@ def main():
                 theta = pol.theta.detach().cpu().numpy().tolist()
                 acc, pkt = val_acc(theta)
                 logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f}")
-                if acc > best[0]:
-                    best = (acc, ep, theta, copy.deepcopy(model.state_dict()))
+                if acc - args.pkt * pkt > best[0]:
+                    best = (acc - args.pkt * pkt, ep, theta, copy.deepcopy(model.state_dict()))
 
         with open(os.path.join(out_dir, f"policy_{name}.pkl"), "wb") as f:
             pickle.dump({"best": dict(zip(BODY_PARTS, best[2])), "init": dict(zip(BODY_PARTS, th0)),
