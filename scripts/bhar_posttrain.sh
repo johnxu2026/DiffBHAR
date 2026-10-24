@@ -22,7 +22,7 @@ if [ "$policy" = conservative ]; then
                --policy_param_max_vals 1000 1000 --policy_source "$source")
 fi
 
-python train_har_policy.py \
+python ../../../scripts/bhar_hook.py train_har_policy.py \
   --multisensor_checkpoint_prefix multisensor_classifier_window_8_acc \
   --logging_prefix "$tag$policy"-asynchronous_multisensor_time_context \
   --policy "$policy" \

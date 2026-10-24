@@ -34,6 +34,11 @@ Packet penalty (--pkt w > 0): adds w * packets/s/sensor (through the STE decisio
 validation keeps the theta with the best val_acc - w * packets/s. Sweeping w from the BHAR start
 traces an accuracy-vs-packets curve to compare with BHAR's single point.
 
+Neural policy (--policy neural): a small per-sensor network (diffbhar/policies.py NeuralPolicy)
+replaces the two-parameter rule. It first imitates the --init theta for --distill batches, so it
+starts where BHAR is, then trains like theta. BHAR replays it through scripts/bhar_hook.py, which
+bhar_posttrain.sh always runs (other policies are untouched).
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -65,8 +70,8 @@ from experiments.train import train  # noqa: E402
 from models.sparse_wrappers import TemporalContextModel  # noqa: E402
 
 from diffbhar.pipeline import run_e2e  # noqa: E402
-from diffbhar.policies import DiffConservativePolicy  # noqa: E402
-from diffbhar.sim import SimConfig  # noqa: E402
+from diffbhar.policies import DiffConservativePolicy, NeuralPolicy  # noqa: E402
+from diffbhar.sim import SimConfig, simulate  # noqa: E402
 
 # settings of experiments/posttraining_scripts/conservative_time_context-pamap2.sh
 BODY_PARTS = ["hand", "chest", "ankle"]
@@ -128,6 +133,49 @@ def sample_batch(X, y, ehs, rng, n):
     return torch.tensor(np.stack(xs)), torch.tensor(np.stack(ys)), torch.tensor(np.stack(hs))
 
 
+class Recorder(torch.nn.Module):
+    """Wraps a policy and keeps the features it was called with."""
+
+    def __init__(self, policy):
+        super().__init__()
+        self.policy, self.feats = policy, []
+
+    def forward(self, f):
+        self.feats.append(f)
+        return self.policy(f)
+
+    def binarize(self, logit, train=True):
+        return self.policy.binarize(logit, train)
+
+
+def distill(student, teacher, X, y, ehs, cfg, rng, dev, steps, batch_size):
+    """Fit the neural policy to the teacher's send probabilities on the teacher's own runs.
+    Returns the agreement of their decisions (where the sensor could send) in the last step."""
+    opt = torch.optim.Adam(student.parameters(), lr=1e-2)
+    for _ in range(steps):
+        _, _, hb = sample_batch(X, y, ehs, rng, batch_size)
+        idx = torch.arange(3, device=dev).repeat(batch_size)
+        teacher.sensor_index = student.sensor_index = idx
+        rec = Recorder(teacher)
+        with torch.no_grad():
+            o = simulate(hb.to(dev).reshape(-1, hb.shape[-1]), rec, cfg, train=False)
+        J = o.logit.shape[1]
+        lg = torch.stack([student(f) for f in rec.feats[:J]], 1)
+        m = o.feasible.to(lg.dtype)
+        loss = (F.binary_cross_entropy_with_logits(lg, torch.sigmoid(o.logit), reduction="none") * m).sum() / m.sum()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    return (((lg >= 0) == (o.logit >= 0)).to(m.dtype) * m).sum().item() / m.sum().item()
+
+
+def snapshot(pol):
+    """Parameters of a policy, without the row -> sensor map."""
+    if isinstance(pol, NeuralPolicy):
+        return {k: v.detach().clone() for k, v in pol.state_dict().items() if k != "sensor_index"}
+    return pol.theta.detach().cpu().numpy().tolist()
+
+
 def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
     """BHAR's classifier finetuning (train_har_policy.py) on the packets of the thetas, in place."""
     loaders = []
@@ -180,12 +228,19 @@ def main():
     ap.add_argument("--pkt", type=float, default=0.0,
                     help="weight of a packets/s/sensor penalty; validation then selects on val_acc - pkt * pkt/s")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
+    ap.add_argument("--policy", choices=["conservative", "neural"], default="conservative")
+    ap.add_argument("--hidden", type=int, default=16, help="neural: hidden units per sensor")
+    ap.add_argument("--neural_lr", type=float, default=1e-3, help="neural: learning rate")
+    ap.add_argument("--distill", type=int, default=100,
+                    help="neural: batches spent imitating the --init theta before training")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     out_dir = out_policy_dir(args.tag)
     if out_dir == BHAR_POLICY:
         sys.exit("this tag would overwrite BHAR's own policy files")
+    if args.policy == "neural" and args.rounds > 0:
+        sys.exit("--rounds needs --policy conservative")
     torch.set_default_dtype(torch.float64)
     dev = torch.device(args.device)
     logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
@@ -231,22 +286,35 @@ def main():
             with torch.backends.cudnn.flags(enabled=False):
                 return model(x.float(), ages.float()).double()
 
+        def make_policy(theta, noise):
+            if args.policy == "neural":
+                p = NeuralPolicy(torch.arange(3), 3, hidden=args.hidden, noise=noise)
+                if theta is not None:
+                    p.load_state_dict(theta, strict=False)
+                return p.to(dev)
+            return DiffConservativePolicy(torch.arange(3), 3, init=theta, scale=args.scale, noise=noise).to(dev)
+
         def val_acc(theta):
             """Held-prediction accuracy and packets/s/sensor on the whole validation sequence."""
-            pv = DiffConservativePolicy(torch.arange(3), 3, init=theta, scale=args.scale, noise=False).to(dev)
+            pv = make_policy(theta, False)
             with torch.no_grad():
                 o = run_e2e(*val, pv, clf, cfg, len(KW["activities"]), train=False, counterfactual=False)
             return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs)
 
-        pol = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=True).to(dev)
-        groups = [dict(params=pol.parameters(), lr=args.lr)]
+        pol = make_policy(None if args.policy == "neural" else th0, True)
+        if args.policy == "neural":
+            teacher = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=False).to(dev)
+            agree = distill(pol, teacher, X, y, ehs, cfg, rng, dev, args.distill, args.batch_size)
+            logger.info(f"  neural policy imitates init theta: {agree:.3f} of decisions agree")
+        start = snapshot(pol)
+        groups = [dict(params=pol.parameters(), lr=args.lr if args.policy == "conservative" else args.neural_lr)]
         if args.clf_lr > 0:
             groups.append(dict(params=model.parameters(), lr=args.clf_lr))
         opt = torch.optim.Adam(groups)
         logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, val {len(yv) / 25 / 60:.0f} min, "
                     f"init theta {th0}, classifier {clf_path}")
-        acc, pkt = val_acc(th0)
-        best = (acc - args.pkt * pkt, -1, th0, copy.deepcopy(model.state_dict()))
+        acc, pkt = val_acc(start)
+        best = (acc - args.pkt * pkt, -1, start, copy.deepcopy(model.state_dict()))
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
         for ep in range(args.epochs * max(args.rounds, 1)):
             if args.rounds > 0 and ep % args.epochs == 0:
@@ -282,21 +350,28 @@ def main():
                     loss = loss + args.pkt * o.sim.a.sum() / (o.sim.a.shape[0] * SEG / 25)
                 loss.backward()
                 opt.step()
-                with torch.no_grad():
-                    pol.theta.clamp_(-1000, 1000)      # BHAR's parameter bounds
+                if args.policy == "conservative":
+                    with torch.no_grad():
+                        pol.theta.clamp_(-1000, 1000)      # BHAR's parameter bounds
                 losses.append(o.loss_task.item())
                 accs.append((o.preds == yb.cpu().numpy()).mean())
-            logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} train_acc={np.mean(accs):.3f} "
-                        f"theta={pol.theta.detach().cpu().numpy().round(1).tolist()}")
+            logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} train_acc={np.mean(accs):.3f}"
+                        + (f" theta={np.round(snapshot(pol), 1).tolist()}" if args.policy == "conservative" else ""))
             if (ep + 1) % args.val_every == 0 or ep + 1 == args.epochs:
-                theta = pol.theta.detach().cpu().numpy().tolist()
+                theta = snapshot(pol)
                 acc, pkt = val_acc(theta)
                 logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f}")
                 if acc - args.pkt * pkt > best[0]:
                     best = (acc - args.pkt * pkt, ep, theta, copy.deepcopy(model.state_dict()))
 
+        saved = best[2]
+        if args.policy == "neural":
+            # BHAR turns best[bp] into "conservative_<0>_<1>"; scripts/bhar_hook.py runs these
+            pt = os.path.join(out_dir, f"policy_{name}.pt")
+            torch.save({k: v.cpu() for k, v in best[2].items()}, pt)
+            saved = [["neural", f"{pt}#{i}"] for i in range(len(BODY_PARTS))]
         with open(os.path.join(out_dir, f"policy_{name}.pkl"), "wb") as f:
-            pickle.dump({"best": dict(zip(BODY_PARTS, best[2])), "init": dict(zip(BODY_PARTS, th0)),
+            pickle.dump({"best": dict(zip(BODY_PARTS, saved)), "init": dict(zip(BODY_PARTS, th0)),
                          "best_val_acc": float(best[0]), "best_epoch": best[1]}, f)
         if args.save_clf:
             d = os.path.join(ART, "saved_data", "checkpoints", "pamap2", "tinyhar", args.tag,
@@ -305,7 +380,7 @@ def main():
             torch.save({"model_state_dict": {"multisensor_model." + k: v for k, v in best[3].items()}},
                        os.path.join(d, f"finetuned_classifier_{name}.pth"))
         best_vals.append(best[0])
-        logger.info(f"subject {s}: saved theta {best[2]} (val_acc {best[0]:.3f}, epoch {best[1]})")
+        logger.info(f"subject {s}: saved theta {saved} (val_acc {best[0]:.3f}, epoch {best[1]})")
     logger.info(f"mean best val_acc over subjects {args.subjects}: {np.mean(best_vals):.4f}")
 
 
