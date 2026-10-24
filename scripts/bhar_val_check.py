@@ -37,7 +37,8 @@ def main():
         _, (Xv, yv) = be.sequences(s, args.seed)
         val = [torch.tensor(a)[None].to(dev) for a in (Xv, yv, be.harvest(Xv, ehs))]
         with open(os.path.join(be.BHAR_POLICY, f"policy_{name}.pkl"), "rb") as f:
-            th_bhar = [[float(v) for v in pickle.load(f)["best"][bp]] for bp in be.BODY_PARTS]
+            best = pickle.load(f)["best"]
+        th_bhar = [[float(v) for v in best[bp]] for bp in be.BODY_PARTS]
         row = []
         for clf_path in (os.path.join(be.PRETRAINED_CLF, f"{name}.pth"),
                          os.path.join(be.BHAR_CLF, f"finetuned_classifier_{name}.pth")):
