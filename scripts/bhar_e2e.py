@@ -26,7 +26,9 @@ baseline). This credits every decision with its full later effect, energy includ
 Alternating training (--rounds R > 0): the frozen classifier decides which theta looks good, and
 the pretrained one (never trained on old packets) favours opportunistic sending. So R times:
 finetune the classifier on the packets of the current theta with BHAR's own finetuning (same data,
-epochs and lr as train_har_policy.py), then train theta for --epochs against it.
+epochs and lr as train_har_policy.py), then train theta for --epochs against it. With
+--rand_ft N the first finetuning also uses the packets of N random thetas, so the classifier starts
+out used to fresh and old packets alike instead of favouring the policy it was finetuned on.
 
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
@@ -122,14 +124,17 @@ def sample_batch(X, y, ehs, rng, n):
     return torch.tensor(np.stack(xs)), torch.tensor(np.stack(ys)), torch.tensor(np.stack(hs))
 
 
-def finetune(model, theta, train_seq, val_seq, ehs, logname, logger, dev):
-    """BHAR's classifier finetuning (train_har_policy.py) on the packets of theta, in place."""
-    pol = [f"conservative_{float(t[0])}_{float(t[1])}" for t in theta]
+def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
+    """BHAR's classifier finetuning (train_har_policy.py) on the packets of the thetas, in place."""
     loaders = []
     for (X, y), shuffle, bs in ((train_seq, True, 32), (val_seq, False, 128)):
         data = {bp: X[i] for i, bp in enumerate(BODY_PARTS)}
-        idxs = {bp: ehs.sparsify_data(pol[i], X[i]) for i, bp in enumerate(BODY_PARTS)}
-        loaders.append(torch.utils.data.DataLoader(SparseHarDataset(data, y, idxs), batch_size=bs,
+        dss = []
+        for theta in thetas:
+            pol = [f"conservative_{float(t[0])}_{float(t[1])}" for t in theta]
+            idxs = {bp: ehs.sparsify_data(pol[i], X[i]) for i, bp in enumerate(BODY_PARTS)}
+            dss.append(SparseHarDataset(data, y, idxs))
+        loaders.append(torch.utils.data.DataLoader(torch.utils.data.ConcatDataset(dss), batch_size=bs,
                                                    shuffle=shuffle, drop_last=True, num_workers=4))
     wrapped = TemporalContextModel(model, dev)
     for p in model.parameters():
@@ -166,6 +171,8 @@ def main():
     ap.add_argument("--rf_k", type=int, default=4, help="random runs per segment for --rf")
     ap.add_argument("--rounds", type=int, default=0,
                     help="> 0: alternate BHAR's classifier finetuning and --epochs of theta training")
+    ap.add_argument("--rand_ft", type=int, default=0,
+                    help="--rounds: random thetas (each parameter in [0, 400]) added to the first finetuning")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -238,7 +245,10 @@ def main():
         for ep in range(args.epochs * max(args.rounds, 1)):
             if args.rounds > 0 and ep % args.epochs == 0:
                 theta = pol.theta.detach().cpu().numpy().tolist()
-                finetune(model, theta, (X, y), (Xv, yv), ehs,
+                thetas = [theta]
+                if ep == 0:
+                    thetas += np.random.default_rng([args.seed, s]).uniform(0, 400, (args.rand_ft, 3, 2)).tolist()
+                finetune(model, thetas, (X, y), (Xv, yv), ehs,
                          f"pamap2/tinyhar/{args.tag}/alternating_clf_{name}", logger, dev)
                 for p in model.parameters():
                     p.requires_grad_(args.clf_lr > 0)
