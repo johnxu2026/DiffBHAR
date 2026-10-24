@@ -23,6 +23,11 @@ times with random send decisions (P(send) = sigmoid(logit)), and the decisions o
 with a lower loss over the whole segment are made more likely (REINFORCE with a leave-one-out
 baseline). This credits every decision with its full later effect, energy included.
 
+Alternating training (--rounds R > 0): the frozen classifier decides which theta looks good, and
+the pretrained one (never trained on old packets) favours opportunistic sending. So R times:
+finetune the classifier on the packets of the current theta with BHAR's own finetuning (same data,
+epochs and lr as train_har_policy.py), then train theta for --epochs against it.
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -49,6 +54,9 @@ from energy_harvesting.energy_harvest import EnergyHarvester  # noqa: E402
 from energy_harvesting.harvesting_sensor import EnergyHarvestingSensor  # noqa: E402
 from models.model_builder import model_builder  # noqa: E402
 from utils.setup_funcs import DATA_ROOT, init_logger  # noqa: E402
+from datasets.sparse_data_utils import SparseHarDataset  # noqa: E402
+from experiments.train import train  # noqa: E402
+from models.sparse_wrappers import TemporalContextModel  # noqa: E402
 
 from diffbhar.pipeline import run_e2e  # noqa: E402
 from diffbhar.policies import DiffConservativePolicy  # noqa: E402
@@ -114,6 +122,31 @@ def sample_batch(X, y, ehs, rng, n):
     return torch.tensor(np.stack(xs)), torch.tensor(np.stack(ys)), torch.tensor(np.stack(hs))
 
 
+def finetune(model, theta, train_seq, val_seq, ehs, logname, logger, dev):
+    """BHAR's classifier finetuning (train_har_policy.py) on the packets of theta, in place."""
+    pol = [f"conservative_{float(t[0])}_{float(t[1])}" for t in theta]
+    loaders = []
+    for (X, y), shuffle, bs in ((train_seq, True, 32), (val_seq, False, 128)):
+        data = {bp: X[i] for i, bp in enumerate(BODY_PARTS)}
+        idxs = {bp: ehs.sparsify_data(pol[i], X[i]) for i, bp in enumerate(BODY_PARTS)}
+        loaders.append(torch.utils.data.DataLoader(SparseHarDataset(data, y, idxs), batch_size=bs,
+                                                   shuffle=shuffle, drop_last=True, num_workers=4))
+    wrapped = TemporalContextModel(model, dev)
+    for p in model.parameters():
+        p.requires_grad_(True)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-4)
+    dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    train(model=wrapped, loss_fn=torch.nn.CrossEntropyLoss(), optimizer=opt, train_logname=logname,
+          epochs=10, ese=10, device=dev, train_loader=loaders[0], val_loader=loaders[1], logger=logger,
+          lr_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt, 10), log_freq=200)
+    torch.set_default_dtype(dtype)
+    # train() keeps the checkpoint with the best validation F1, as BHAR then loads it
+    path = os.path.join(ART, "saved_data", "checkpoints", logname + ".pth")
+    wrapped.load_state_dict(torch.load(path, map_location=dev)["model_state_dict"])
+    model.eval()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=0)
@@ -131,6 +164,8 @@ def main():
     ap.add_argument("--ste", type=float, default=1.0, help="weight of the straight-through gradient")
     ap.add_argument("--rf", type=float, default=0.0, help="> 0: weight of the score-function gradient")
     ap.add_argument("--rf_k", type=int, default=4, help="random runs per segment for --rf")
+    ap.add_argument("--rounds", type=int, default=0,
+                    help="> 0: alternate BHAR's classifier finetuning and --epochs of theta training")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
@@ -200,7 +235,17 @@ def main():
         acc, pkt = val_acc(th0)
         best = (acc, -1, th0, copy.deepcopy(model.state_dict()))
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
-        for ep in range(args.epochs):
+        for ep in range(args.epochs * max(args.rounds, 1)):
+            if args.rounds > 0 and ep % args.epochs == 0:
+                theta = pol.theta.detach().cpu().numpy().tolist()
+                finetune(model, theta, (X, y), (Xv, yv), ehs,
+                         f"pamap2/tinyhar/{args.tag}/alternating_clf_{name}", logger, dev)
+                for p in model.parameters():
+                    p.requires_grad_(args.clf_lr > 0)
+                acc, pkt = val_acc(theta)
+                logger.info(f"  round {ep // args.epochs}: classifier finetuned, val_acc={acc:.3f} pkt/s={pkt:.3f}")
+                if acc > best[0]:
+                    best = (acc, ep - 1, theta, copy.deepcopy(model.state_dict()))
             losses, accs = [], []
             k = args.rf_k if args.rf > 0 else 1
             for _ in range(args.segments // args.batch_size):
