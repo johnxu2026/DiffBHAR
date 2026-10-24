@@ -8,7 +8,7 @@ End-to-end differentiable data acquisition for batteryless HAR, built on top of
 ```
 external/BHAR_codes_artifact   original BHAR code (git submodule, pinned, not modified)
 diffbhar/                      differentiable simulator, policies, end-to-end pipeline
-scripts/pamap2_small.py        small PAMAP2 experiment (CPU)
+scripts/run_pamap2.py          PAMAP2 experiment (opp / bhar / e2e / joint)
 data/, results/                created locally, not in git
 ```
 
@@ -26,10 +26,10 @@ the classification loss), one leave-one-subject-out fold, CPU only.
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install numpy scipy pandas matplotlib
-python scripts/pamap2_small.py --test_subjects 1      # downloads PAMAP2 into data/ on first run
+python scripts/run_pamap2.py --exp smoke --test_subjects 1   # downloads PAMAP2 into data/ on first run
 ```
 
-Outputs go to `results/`: a JSON with all metrics, `*_summary.png`, `*_timeline.png`.
+Outputs go to `results/<date>_<exp>/`: `<run>.log`, `<run>.json` (all metrics plus git commit and command), `<run>_summary.png`, `<run>_timeline.png`, where `<run>` is e.g. `s1_seed0` or `all_seed2_ft7`.
 
 ## Roadmap
 

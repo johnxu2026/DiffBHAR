@@ -20,6 +20,7 @@ from .sim import simulate, SimConfig
 class E2EOutput:
     loss_task: torch.Tensor      # held-prediction CE over all time steps (policy objective)
     loss_active: torch.Tensor    # CE at actual arrivals only (BHAR Eq. 19, classifier objective)
+    loss_seq: torch.Tensor       # [B] loss_task of each sequence
     n_packets: torch.Tensor      # STE count of sent packets (for an optional resource term)
     preds: np.ndarray            # [B, L] hard held predictions
     sim: object
@@ -108,6 +109,7 @@ def run_e2e(x, y, h, policy, classifier, cfg: SimConfig, n_classes, max_p=None,
     logp_y = torch.log(p_step.gather(2, y[..., None]).squeeze(-1).clamp_min(1e-8))
     wy = cw[y]
     loss_task = -(wy * logp_y).sum() / wy.sum()
+    loss_seq = -(wy * logp_y).sum(1) / wy.sum(1)
 
     # --- classifier loss on actual arrivals only (BHAR's active-region finetuning) ---
     y_arr = y[:, arr]                                          # label at arrival step
@@ -117,7 +119,7 @@ def run_e2e(x, y, h, policy, classifier, cfg: SimConfig, n_classes, max_p=None,
     loss_active = (ce * mask).sum() / mask.sum().clamp_min(1.0)
 
     preds = p_step.argmax(-1).detach().cpu().numpy()
-    return E2EOutput(loss_task=loss_task, loss_active=loss_active, n_packets=a.sum(),
+    return E2EOutput(loss_task=loss_task, loss_active=loss_active, loss_seq=loss_seq, n_packets=a.sum(),
                      preds=preds, sim=sim, arrivals=arr)
 
 
