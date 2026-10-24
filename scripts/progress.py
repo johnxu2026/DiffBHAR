@@ -38,7 +38,7 @@ for tag in sys.argv[1:]:
         ls = lines(log)
         n_theta = sum("saved theta" in l for l in ls)
         if n_theta < 8:
-            last = ls[-1][:19] + " " + ls[-1][ls[-1].find("]") + 1:].strip()[:70] if ls else ""
+            last = ls[-1][:19] + " " + ls[-1][ls[-1].find("]") + 1:].strip()[:45] if ls else ""
             print(f"{tag} seed{seed}: theta training, subject {n_theta + 1}/8 | last log: {last}")
             continue
         ft = latest(os.path.join(LOGS, tag, METHOD, f"train_log_seed{seed}_*.log"))
