@@ -13,6 +13,7 @@ import pickle
 import numpy as np
 
 import bhar_e2e as be
+import bhar_hook  # noqa: F401  (replays neural policies)
 
 
 def main():
@@ -40,7 +41,8 @@ def main():
                         continue
                     with open(p, "rb") as f:
                         th = pickle.load(f)["best"]
-                    pol = {bp: f"conservative_{float(th[bp][0])}_{float(th[bp][1])}" for bp in be.BODY_PARTS}
+                    pol = {bp: f"conservative_{th[bp][0]}_{th[bp][1]}" if th[bp][0] == "neural"
+                           else f"conservative_{float(th[bp][0])}_{float(th[bp][1])}" for bp in be.BODY_PARTS}
                 n = sum(len(ehs.sparsify_data(pol[bp], X[i])) for i, bp in enumerate(be.BODY_PARTS))
                 rate[m].setdefault(seed, []).append(n / (len(be.BODY_PARTS) * len(y) / cfg.fs))
 
