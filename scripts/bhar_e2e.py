@@ -235,7 +235,10 @@ def main():
                     help="--rounds: random thetas (each parameter in [0, 400]) added to the first finetuning")
     ap.add_argument("--pkt", type=float, default=0.0,
                     help="weight of a packets/s/sensor penalty; validation then selects on val_acc - pkt * pkt/s")
-    ap.add_argument("--init", choices=["bhar", "zero"], default="bhar")
+    ap.add_argument("--init", choices=["bhar", "zero"], default="bhar",
+                    help="bhar: BHAR's theta and finetuned classifier; zero: --init_theta, pretrained classifier")
+    ap.add_argument("--init_theta", type=float, nargs=2, default=[0.0, 0.0],
+                    help="--init zero: (theta_e, theta_p) for every sensor, no BHAR search involved")
     ap.add_argument("--policy", choices=["conservative", "neural"], default="conservative")
     ap.add_argument("--hidden", type=int, default=16, help="neural: hidden units per sensor")
     ap.add_argument("--neural_lr", type=float, default=1e-3, help="neural: learning rate")
@@ -274,7 +277,7 @@ def main():
             th0 = [[float(v) for v in th0[bp]] for bp in BODY_PARTS]
             clf_path = os.path.join(BHAR_CLF, f"finetuned_classifier_{name}.pth")
         else:
-            th0 = [[0.0, 0.0] for _ in BODY_PARTS]
+            th0 = [list(args.init_theta) for _ in BODY_PARTS]
             clf_path = os.path.join(PRETRAINED_CLF, f"{name}.pth")
         model = model_builder(**KW).float().to(dev)
         # finetuned checkpoints hold BHAR's wrapper (TemporalContextModel): drop its prefix
