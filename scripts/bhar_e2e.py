@@ -149,24 +149,32 @@ class Recorder(torch.nn.Module):
 
 
 def distill(student, teacher, X, y, ehs, cfg, rng, dev, steps, batch_size):
-    """Fit the neural policy to the teacher's send probabilities on the teacher's own runs.
-    Returns the agreement of their decisions (where the sensor could send) in the last step."""
+    """Fit the neural policy to the teacher's decisions. The first half of the batches runs the
+    teacher; the second half runs the student and labels the states it reaches with the teacher's
+    decision (DAgger; the teacher sees the same features), so small errors cannot drift the
+    sensor into states the student never learned. Sends are rare, so sends and holds get equal
+    weight. Returns the share of the teacher's sends and of its holds that the student repeats
+    (where the sensor could send) in the last batch."""
     opt = torch.optim.Adam(student.parameters(), lr=1e-2)
-    for _ in range(steps):
+    for it in range(steps):
         _, _, hb = sample_batch(X, y, ehs, rng, batch_size)
         idx = torch.arange(3, device=dev).repeat(batch_size)
         teacher.sensor_index = student.sensor_index = idx
-        rec = Recorder(teacher)
+        rec = Recorder(teacher if it < steps // 2 else student)
         with torch.no_grad():
             o = simulate(hb.to(dev).reshape(-1, hb.shape[-1]), rec, cfg, train=False)
-        J = o.logit.shape[1]
-        lg = torch.stack([student(f) for f in rec.feats[:J]], 1)
-        m = o.feasible.to(lg.dtype)
-        loss = (F.binary_cross_entropy_with_logits(lg, torch.sigmoid(o.logit), reduction="none") * m).sum() / m.sum()
+            feats = rec.feats[:o.logit.shape[1]]
+            tl = torch.stack([teacher(f) for f in feats], 1)
+        lg = torch.stack([student(f) for f in feats], 1)
+        pos, neg = (tl >= 0) & o.feasible, (tl < 0) & o.feasible
+        w = pos / pos.sum().clamp(min=1) + neg / neg.sum().clamp(min=1)
+        loss = (F.binary_cross_entropy_with_logits(lg, torch.sigmoid(tl), reduction="none") * w).sum() / 2
         opt.zero_grad()
         loss.backward()
         opt.step()
-    return (((lg >= 0) == (o.logit >= 0)).to(m.dtype) * m).sum().item() / m.sum().item()
+    sends = ((lg >= 0) & pos).sum().item() / max(pos.sum().item(), 1)
+    holds = ((lg < 0) & neg).sum().item() / max(neg.sum().item(), 1)
+    return sends, holds
 
 
 def snapshot(pol):
@@ -304,8 +312,8 @@ def main():
         pol = make_policy(None if args.policy == "neural" else th0, True)
         if args.policy == "neural":
             teacher = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=False).to(dev)
-            agree = distill(pol, teacher, X, y, ehs, cfg, rng, dev, args.distill, args.batch_size)
-            logger.info(f"  neural policy imitates init theta: {agree:.3f} of decisions agree")
+            sends, holds = distill(pol, teacher, X, y, ehs, cfg, rng, dev, args.distill, args.batch_size)
+            logger.info(f"  neural policy imitates init theta: repeats {sends:.3f} of its sends, {holds:.3f} of its holds")
         start = snapshot(pol)
         groups = [dict(params=pol.parameters(), lr=args.lr if args.policy == "conservative" else args.neural_lr)]
         if args.clf_lr > 0:
