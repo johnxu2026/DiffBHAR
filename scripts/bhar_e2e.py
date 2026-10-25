@@ -31,7 +31,8 @@ epochs and lr as train_har_policy.py), then train theta for --epochs against it.
 out used to fresh and old packets alike instead of favouring the policy it was finetuned on.
 
 Packet penalty (--pkt w > 0): adds w * packets/s/sensor (through the STE decisions) to the loss and
-validation keeps the theta with the best val_acc - w * packets/s. Sweeping w from the BHAR start
+validation keeps the theta with the lowest val loss_task + w * packets/s, the same objective as
+training (until 2026-10-25 it used val_acc - w * packets/s, which mixed units). Sweeping w
 traces an accuracy-vs-packets curve to compare with BHAR's single point.
 
 Neural policy (--policy neural): a small per-sensor network (diffbhar/policies.py NeuralPolicy)
@@ -234,7 +235,7 @@ def main():
     ap.add_argument("--rand_ft", type=int, default=0,
                     help="--rounds: random thetas (each parameter in [0, 400]) added to the first finetuning")
     ap.add_argument("--pkt", type=float, default=0.0,
-                    help="weight of a packets/s/sensor penalty; validation then selects on val_acc - pkt * pkt/s")
+                    help="weight of a packets/s/sensor penalty; validation then selects on loss_task + pkt * pkt/s")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar",
                     help="bhar: BHAR's theta and finetuned classifier; zero: --init_theta, pretrained classifier")
     ap.add_argument("--init_theta", type=float, nargs=2, default=[0.0, 0.0],
@@ -306,11 +307,15 @@ def main():
             return DiffConservativePolicy(torch.arange(3), 3, init=theta, scale=args.scale, noise=noise).to(dev)
 
         def val_acc(theta):
-            """Held-prediction accuracy and packets/s/sensor on the whole validation sequence."""
+            """Held-prediction accuracy, packets/s/sensor and loss_task on the whole validation sequence."""
             pv = make_policy(theta, False)
             with torch.no_grad():
                 o = run_e2e(*val, pv, clf, cfg, len(KW["activities"]), train=False, counterfactual=False)
-            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs)
+            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs), o.loss_task.item()
+
+        def score(acc, pkt, loss):
+            """Validation selection; with --pkt the training objective itself, so both agree."""
+            return acc if args.pkt == 0 else -(loss + args.pkt * pkt)
 
         pol = make_policy(None if args.policy == "neural" else th0, True)
         if args.policy == "neural":
@@ -324,9 +329,9 @@ def main():
         opt = torch.optim.Adam(groups)
         logger.info(f"subject {s}: train {len(y) / 25 / 60:.0f} min, val {len(yv) / 25 / 60:.0f} min, "
                     f"init theta {th0}, classifier {clf_path}")
-        acc, pkt = val_acc(start)
-        best = (acc - args.pkt * pkt, -1, start, copy.deepcopy(model.state_dict()))
-        logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f}")
+        acc, pkt, vl = val_acc(start)
+        best = (score(acc, pkt, vl), -1, start, copy.deepcopy(model.state_dict()))
+        logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f} loss={vl:.3f}")
         for ep in range(args.epochs * max(args.rounds, 1)):
             if args.rounds > 0 and ep % args.epochs == 0:
                 theta = pol.theta.detach().cpu().numpy().tolist()
@@ -337,10 +342,10 @@ def main():
                          f"pamap2/tinyhar/{args.tag}/alternating_clf_{name}", logger, dev)
                 for p in model.parameters():
                     p.requires_grad_(args.clf_lr > 0)
-                acc, pkt = val_acc(theta)
+                acc, pkt, vl = val_acc(theta)
                 logger.info(f"  round {ep // args.epochs}: classifier finetuned, val_acc={acc:.3f} pkt/s={pkt:.3f}")
-                if acc - args.pkt * pkt > best[0]:
-                    best = (acc - args.pkt * pkt, ep - 1, theta, copy.deepcopy(model.state_dict()))
+                if score(acc, pkt, vl) > best[0]:
+                    best = (score(acc, pkt, vl), ep - 1, theta, copy.deepcopy(model.state_dict()))
             losses, accs = [], []
             k = args.rf_k if args.rf > 0 else 1
             for _ in range(args.segments // args.batch_size):
@@ -370,10 +375,10 @@ def main():
                         + (f" theta={np.round(snapshot(pol), 1).tolist()}" if args.policy == "conservative" else ""))
             if (ep + 1) % args.val_every == 0 or ep + 1 == args.epochs:
                 theta = snapshot(pol)
-                acc, pkt = val_acc(theta)
-                logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f}")
-                if acc - args.pkt * pkt > best[0]:
-                    best = (acc - args.pkt * pkt, ep, theta, copy.deepcopy(model.state_dict()))
+                acc, pkt, vl = val_acc(theta)
+                logger.info(f"  epoch {ep}: val_acc={acc:.3f} pkt/s={pkt:.3f} loss={vl:.3f}")
+                if score(acc, pkt, vl) > best[0]:
+                    best = (score(acc, pkt, vl), ep, theta, copy.deepcopy(model.state_dict()))
 
         saved = best[2]
         if args.policy == "neural":
