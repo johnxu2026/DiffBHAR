@@ -7,6 +7,11 @@ true loss of the hard rule on those segments and on the whole validation sequenc
 is right, d loss / d theta_p has the sign of the loss differences between neighbouring theta_p
 and a |t| well above 2.
 
+Found 2026-10-26: with the default settings the gradient explodes (1e9 to 1e20) for theta_p >= 100.
+When the rule binds, each packet's timing depends on the previous one through the delta reset, and
+every link multiplies the gradient by about (Delta + w + 1) * sigmoid' / scale, ~10 at theta_p = 200.
+--no_delta_grad cuts that chain.
+
     python scripts/grad_check.py --subjects 1 2 --device cuda
 """
 import argparse
@@ -28,11 +33,13 @@ def main():
     ap.add_argument("--theta_p", type=float, nargs="+", default=[50, 100, 150, 200, 300])
     ap.add_argument("--batches", type=int, default=16)
     ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--scale", type=float, default=5.0, help="policy temperature, as bhar_e2e.py")
+    ap.add_argument("--no_delta_grad", action="store_true", help="no gradient through the delta reset")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     torch.set_default_dtype(torch.float64)
     dev = torch.device(args.device)
-    cfg = SimConfig()
+    cfg = SimConfig(delta_grad=not args.no_delta_grad)
     ehs = be.EnergyHarvestingSensor(be.EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
                                     cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                     cfg.policy_frequency, cfg.init_energy)
@@ -61,8 +68,8 @@ def main():
               f"d loss/d theta_p (t) | d loss/d theta_e (t), mean over sensors, x1e3")
         for tp in args.theta_p:
             torch.manual_seed(args.seed)
-            pol = DiffConservativePolicy(torch.arange(3), 3, init=(0.0, tp), noise=True).to(dev)
-            hard = DiffConservativePolicy(torch.arange(3), 3, init=(0.0, tp), noise=False).to(dev)
+            pol = DiffConservativePolicy(torch.arange(3), 3, init=(0.0, tp), scale=args.scale, noise=True).to(dev)
+            hard = DiffConservativePolicy(torch.arange(3), 3, init=(0.0, tp), scale=args.scale, noise=False).to(dev)
             grads, seg_loss = [], []
             for xb, yb, hb in batches:
                 pol.sensor_index = hard.sensor_index = torch.arange(3, device=dev).repeat(len(yb))

@@ -223,6 +223,8 @@ def main():
     ap.add_argument("--lr", type=float, default=10.0)
     ap.add_argument("--scale", type=float, default=5.0, help="policy temperature: logit = (Delta - tau) / scale")
     ap.add_argument("--kappa", type=float, default=5e-6, help="width (J) of the energy-feasibility surrogate")
+    ap.add_argument("--no_delta_grad", action="store_true",
+                    help="no gradient through the delta reset (it explodes once theta_p binds, scripts/grad_check.py)")
     ap.add_argument("--val_every", type=int, default=2, help="epochs between validation scores")
     ap.add_argument("--clf_lr", type=float, default=0.0, help="> 0: joint training of theta and the classifier")
     ap.add_argument("--lam", type=float, default=1.0, help="weight of loss_active in joint training")
@@ -258,7 +260,7 @@ def main():
     logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
     logger.info(str(vars(args)))
 
-    cfg = SimConfig(feas_kappa=args.kappa)
+    cfg = SimConfig(feas_kappa=args.kappa, delta_grad=not args.no_delta_grad)
     ehs = EnergyHarvestingSensor(EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
                                  cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                  cfg.policy_frequency, cfg.init_energy)

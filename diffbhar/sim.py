@@ -28,6 +28,7 @@ class SimConfig:
     init_energy: float = 0.0        # J, extra energy for the first packet after dying
     feas_kappa: float = 5e-6        # J, width of the sigmoid surrogate for the feasibility gate
     compat: bool = True             # replicate artifact energy bookkeeping during a packet
+    delta_grad: bool = True         # gradient through the delta reset (explodes when the rule binds)
 
     @property
     def policy_period(self):
@@ -148,7 +149,7 @@ def simulate(h, policy, cfg: SimConfig, max_p=None, train=True, record_energy=Fa
             # surrogate-only terms (forward value unchanged): spending energy, resetting delta
             uf_now = torch.where(need_init, (thr + cfg.init_energy) / thr, torch.ones_like(uf))
             E = E - thr * uf_now * (a - a.detach())
-            delta = delta - (delta.detach() + w + 1) * a   # forward: -> -(w+1) when sent
+            delta = delta - (delta.detach() + w + 1) * (a if cfg.delta_grad else a.detach())  # -> -(w+1) when sent
 
             E_ref = torch.where(sent, E, E_ref)
             uf = torch.where(sent, uf_now, uf)
