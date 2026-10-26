@@ -238,6 +238,8 @@ def main():
                     help="--rounds: random thetas (each parameter in [0, 400]) added to the first finetuning")
     ap.add_argument("--pkt", type=float, default=0.0,
                     help="weight of a packets/s/sensor penalty; validation then selects on loss_task + pkt * pkt/s")
+    ap.add_argument("--select", choices=["acc", "loss"], default="acc",
+                    help="validation selection without --pkt: val_acc, or val loss_task (the training objective)")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar",
                     help="bhar: BHAR's theta and finetuned classifier; zero: --init_theta, pretrained classifier")
     ap.add_argument("--init_theta", type=float, nargs=2, default=[0.0, 0.0],
@@ -317,7 +319,7 @@ def main():
 
         def score(acc, pkt, loss):
             """Validation selection; with --pkt the training objective itself, so both agree."""
-            return acc if args.pkt == 0 else -(loss + args.pkt * pkt)
+            return acc if args.pkt == 0 and args.select == "acc" else -(loss + args.pkt * pkt)
 
         pol = make_policy(None if args.policy == "neural" else th0, True)
         if args.policy == "neural":
