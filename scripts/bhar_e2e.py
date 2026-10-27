@@ -35,6 +35,14 @@ validation keeps the theta with the lowest val loss_task + w * packets/s, the sa
 training (until 2026-10-25 it used val_acc - w * packets/s, which mixed units). Sweeping w
 traces an accuracy-vs-packets curve to compare with BHAR's single point.
 
+Worst-subject training (--dro eta > 0, group DRO, Sagawa et al. 2020): validation comes from the
+same 7 people as training, so a rule that suits some of them and fails others still looks good on
+average, and fails on the new test person (EXPERIMENTS.md, experiments 23-24). With --dro each
+batch takes the same number of segments from every training subject, the loss is the weighted
+mean of the per-subject losses, the weight of a subject growing by exp(eta * its loss) at every
+step (so the worst subjects dominate), and validation keeps the theta whose worst subject (on
+that subject's own validation data) has the lowest loss. Same data and split as BHAR.
+
 Neural policy (--policy neural): a small per-sensor network (diffbhar/policies.py NeuralPolicy)
 replaces the two-parameter rule. It first imitates the --init theta for --distill batches, so it
 starts where BHAR is, then trains like theta. BHAR replays it through scripts/bhar_hook.py, which
@@ -94,9 +102,11 @@ def out_policy_dir(tag):
     return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
-def sequences(test_subject, seed, test=False):
+def sequences(test_subject, seed, test=False, per_subject=False):
     """Train and validation (and test) sequences, each ([b, L, 3] raw data, as BHAR uses it, and
-    labels), generated as in train_har_policy.py (same seed, in the order train, val, test)."""
+    labels), generated as in train_har_policy.py (same seed, in the order train, val, test).
+    per_subject: then also one train and one validation sequence per training subject (made after
+    BHAR's, so those stay the same), as two lists."""
     kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT["pamap2"]), "preprocessed_data"),
               subjects=[s for s in SUBJECTS if s != test_subject], normalize=False)
     dss = [HARClassifierDataset(**kw, train=True, val=False), HARClassifierDataset(**kw, train=False, val=True)]
@@ -104,12 +114,16 @@ def sequences(test_subject, seed, test=False):
         dss.append(HARClassifierDataset(**dict(kw, subjects=[test_subject]), train=False, val=False))
     cmap = dss[0].dataset_info["sensor_channel_map"]
     np.random.seed(seed)
-    out = []
-    for ds in dss:
-        X, y = generate_activity_sequence(np.concatenate(list(ds.raw_data.values())),
-                                          np.concatenate(list(ds.raw_labels.values())), 10, 30, 25)
+
+    def make(data, labels, ds):
+        X, y = generate_activity_sequence(data, labels, 10, 30, 25)
         per_bp = [X[:, np.isin(ds.active_channels, cmap[bp]["acc"])] for bp in BODY_PARTS]
-        out.append((np.stack(per_bp), y.astype(np.int64)))
+        return np.stack(per_bp), y.astype(np.int64)
+
+    out = [make(np.concatenate(list(ds.raw_data.values())), np.concatenate(list(ds.raw_labels.values())), ds)
+           for ds in dss]
+    if per_subject:
+        out += [[make(ds.raw_data[k], ds.raw_labels[k], ds) for k in ds.raw_data] for ds in dss[:2]]
     return out
 
 
@@ -240,6 +254,9 @@ def main():
                     help="weight of a packets/s/sensor penalty; validation then selects on loss_task + pkt * pkt/s")
     ap.add_argument("--select", choices=["acc", "loss"], default="acc",
                     help="validation selection without --pkt: val_acc, or val loss_task (the training objective)")
+    ap.add_argument("--dro", type=float, default=0.0,
+                    help="> 0: worst-subject (group DRO) training with this step size; validation then "
+                         "selects on the worst training subject's val loss_task (+ pkt * pkt/s)")
     ap.add_argument("--init", choices=["bhar", "zero"], default="bhar",
                     help="bhar: BHAR's theta and finetuned classifier; zero: --init_theta, pretrained classifier")
     ap.add_argument("--init_theta", type=float, nargs=2, default=[0.0, 0.0],
@@ -255,6 +272,8 @@ def main():
     out_dir = out_policy_dir(args.tag)
     if out_dir == BHAR_POLICY:
         sys.exit("this tag would overwrite BHAR's own policy files")
+    if args.dro > 0 and args.rf > 0:
+        sys.exit("--dro does not support --rf")
     if args.policy == "neural" and args.rounds > 0:
         sys.exit("--rounds needs --policy conservative")
     torch.set_default_dtype(torch.float64)
@@ -273,8 +292,12 @@ def main():
         torch.manual_seed(args.seed)
         rng = np.random.default_rng(args.seed)
         name = f"[{s}]_seed{args.seed}"
-        (X, y), (Xv, yv) = sequences(s, args.seed)
+        (X, y), (Xv, yv), *groups = sequences(s, args.seed, per_subject=args.dro > 0)
         val = [torch.tensor(a)[None].to(dev) for a in (Xv, yv, harvest(Xv, ehs))]
+        if args.dro > 0:
+            train_g = groups[0]
+            val_g = [[torch.tensor(a)[None].to(dev) for a in (xg, yg, harvest(xg, ehs))] for xg, yg in groups[1]]
+            q = torch.ones(len(train_g), device=dev) / len(train_g)      # subject weights
 
         if args.init == "bhar":
             with open(os.path.join(BHAR_POLICY, f"policy_{name}.pkl"), "rb") as f:
@@ -315,11 +338,15 @@ def main():
             pv = make_policy(theta, False)
             with torch.no_grad():
                 o = run_e2e(*val, pv, clf, cfg, len(KW["activities"]), train=False, counterfactual=False)
-            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs), o.loss_task.item()
+                vl = o.loss_task.item()
+                if args.dro > 0:   # the worst training subject, on its own validation data
+                    vl = max(run_e2e(*v, pv, clf, cfg, len(KW["activities"]), train=False,
+                                     counterfactual=False).loss_task.item() for v in val_g)
+            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs), vl
 
         def score(acc, pkt, loss):
             """Validation selection; with --pkt the training objective itself, so both agree."""
-            return acc if args.pkt == 0 and args.select == "acc" else -(loss + args.pkt * pkt)
+            return acc if args.pkt == 0 and args.select == "acc" and args.dro == 0 else -(loss + args.pkt * pkt)
 
         pol = make_policy(None if args.policy == "neural" else th0, True)
         if args.policy == "neural":
@@ -353,12 +380,23 @@ def main():
             losses, accs = [], []
             k = args.rf_k if args.rf > 0 else 1
             for _ in range(args.segments // args.batch_size):
-                xb, yb, hb = (t.to(dev).repeat_interleave(k, 0)
-                              for t in sample_batch(X, y, ehs, rng, args.batch_size // k))
+                if args.dro > 0:
+                    n = max(1, args.batch_size // len(train_g))
+                    xb, yb, hb = (torch.cat(t).to(dev) for t in
+                                  zip(*(sample_batch(xg, yg, ehs, rng, n) for xg, yg in train_g)))
+                else:
+                    xb, yb, hb = (t.to(dev).repeat_interleave(k, 0)
+                                  for t in sample_batch(X, y, ehs, rng, args.batch_size // k))
                 pol.sensor_index = torch.arange(3, device=dev).repeat(len(yb))
                 o = run_e2e(xb, yb, hb, pol, clf, cfg, len(KW["activities"]), train=True)
                 opt.zero_grad()
-                loss = args.ste * o.loss_task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
+                task = o.loss_task
+                if args.dro > 0:
+                    ls_g = o.loss_seq.view(len(train_g), -1).mean(1)
+                    q = q * torch.exp(args.dro * ls_g.detach())
+                    q = q / q.sum()
+                    task = (q * ls_g).sum()
+                loss = args.ste * task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
                 if args.rf > 0:
                     ls = o.loss_seq.detach().view(-1, k)
                     adv = (ls - (ls.sum(1, keepdim=True) - ls) / (k - 1)).view(-1)
@@ -376,6 +414,7 @@ def main():
                 losses.append(o.loss_task.item())
                 accs.append((o.preds == yb.cpu().numpy()).mean())
             logger.info(f"  epoch {ep}: loss_task={np.mean(losses):.3f} train_acc={np.mean(accs):.3f}"
+                        + (f" subject_weights={np.round(q.cpu().numpy(), 2).tolist()}" if args.dro > 0 else "")
                         + (f" theta={np.round(snapshot(pol), 1).tolist()}" if args.policy == "conservative" else ""))
             if (ep + 1) % args.val_every == 0 or ep + 1 == args.epochs:
                 theta = snapshot(pol)
