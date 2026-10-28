@@ -5,6 +5,7 @@
 #
 # usage:  bash scripts/bhar_posttrain.sh {conservative|opportunistic} SEED {cached|scratch} [TAG] [DATASET]
 #   DATASET: pamap2 (default), dsads, rwhar or opportunity; TAG may be "" to give a DATASET
+#   env POLICY_EPOCHS overrides BHAR's pattern-search epochs (budget control)
 #   cached:  reuse BHAR's learned policy and finetuned classifier (evaluation only)
 #   scratch: learn the policy (pattern search) and finetune the classifier again
 #   TAG:     run under <TAG>/<method>; BHAR then looks for the policy in
@@ -28,6 +29,7 @@ case $dataset in
                lr=500; ep=31; ft=(16 1e-3) ;;
   *) echo "unknown dataset $dataset"; exit 1 ;;
 esac
+ep=${POLICY_EPOCHS:-$ep}   # e.g. POLICY_EPOCHS=512: same number of 100 s segments as bhar_e2e.py (16 x 64 / 2)
 cd "$(dirname "$0")/../external/BHAR_codes_artifact/experiments"
 
 policy_args=()
