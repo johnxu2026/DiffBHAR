@@ -29,6 +29,7 @@ finetune the classifier on the packets of the current theta with BHAR's own fine
 epochs and lr as train_har_policy.py), then train theta for --epochs against it. With
 --rand_ft N the first finetuning also uses the packets of N random thetas, so the classifier starts
 out used to fresh and old packets alike instead of favouring the policy it was finetuned on.
+Works for --policy neural too: BHAR replays the current network through scripts/bhar_hook.py.
 
 Packet penalty (--pkt w > 0): adds w * packets/s/sensor (through the STE decisions) to the loss and
 validation keeps the theta with the lowest val loss_task + w * packets/s, the same objective as
@@ -78,6 +79,7 @@ from datasets.sparse_data_utils import SparseHarDataset  # noqa: E402
 from experiments.train import train  # noqa: E402
 from models.sparse_wrappers import TemporalContextModel  # noqa: E402
 
+import bhar_hook  # noqa: E402,F401  (BHAR's sparsify_data also runs our neural policies)
 from diffbhar.pipeline import run_e2e  # noqa: E402
 from diffbhar.policies import DiffConservativePolicy, NeuralPolicy  # noqa: E402
 from diffbhar.sim import SimConfig, simulate  # noqa: E402
@@ -200,13 +202,15 @@ def snapshot(pol):
 
 
 def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
-    """BHAR's classifier finetuning (train_har_policy.py) on the packets of the thetas, in place."""
+    """BHAR's classifier finetuning (train_har_policy.py) on the packets of the thetas, in place.
+    A theta is [theta_e, theta_p] per sensor, or ["neural", "<file.pt>#<sensor>"] (scripts/bhar_hook.py)."""
     loaders = []
     for (X, y), shuffle, bs in ((train_seq, True, 32), (val_seq, False, 128)):
         data = {bp: X[i] for i, bp in enumerate(BODY_PARTS)}
         dss = []
         for theta in thetas:
-            pol = [f"conservative_{float(t[0])}_{float(t[1])}" for t in theta]
+            pol = [f"conservative_{t[0]}_{t[1]}" if t[0] == "neural" else
+                   f"conservative_{float(t[0])}_{float(t[1])}" for t in theta]
             idxs = {bp: ehs.sparsify_data(pol[i], X[i]) for i, bp in enumerate(BODY_PARTS)}
             dss.append(SparseHarDataset(data, y, idxs))
         loaders.append(torch.utils.data.DataLoader(torch.utils.data.ConcatDataset(dss), batch_size=bs,
@@ -274,8 +278,6 @@ def main():
         sys.exit("this tag would overwrite BHAR's own policy files")
     if args.dro > 0 and args.rf > 0:
         sys.exit("--dro does not support --rf")
-    if args.policy == "neural" and args.rounds > 0:
-        sys.exit("--rounds needs --policy conservative")
     torch.set_default_dtype(torch.float64)
     dev = torch.device(args.device)
     logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
@@ -365,8 +367,13 @@ def main():
         logger.info(f"  init: val_acc={acc:.3f} pkt/s={pkt:.3f} loss={vl:.3f}")
         for ep in range(args.epochs * max(args.rounds, 1)):
             if args.rounds > 0 and ep % args.epochs == 0:
-                theta = pol.theta.detach().cpu().numpy().tolist()
-                thetas = [theta]
+                theta = snapshot(pol)
+                if args.policy == "neural":     # BHAR replays it from a file, as in the final evaluation
+                    pt = os.path.join(out_dir, f"policy_{name}_round.pt")
+                    torch.save({k: v.cpu() for k, v in theta.items()}, pt)
+                    thetas = [[["neural", f"{pt}#{i}"] for i in range(len(BODY_PARTS))]]
+                else:
+                    thetas = [theta]
                 if ep == 0:
                     thetas += np.random.default_rng([args.seed, s]).uniform(0, 400, (args.rand_ft, 3, 2)).tolist()
                 finetune(model, thetas, (X, y), (Xv, yv), ehs,
