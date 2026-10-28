@@ -1,10 +1,10 @@
-"""Packets sent on the test sequences by each policy in BHAR's PAMAP2 + TinyHAR setup.
+"""Packets sent on the test sequences by each policy in BHAR's TinyHAR setup (--dataset, default PAMAP2).
 
 BHAR's results pickles store accuracy and regions but not packet counts, so this rebuilds each
 test sequence (same seed and order as train_har_policy.py) and replays every learned policy
 with BHAR's own sensor simulator.
 
-usage:  python scripts/bhar_packets.py [--tags e2e zero/e2e] [--seeds 0 1 2]
+usage:  python scripts/bhar_packets.py [--dataset pamap2] [--tags e2e zero/e2e] [--seeds 0 1 2]
 """
 import argparse
 import os
@@ -18,9 +18,11 @@ import bhar_hook  # noqa: F401  (replays neural policies)
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices=list(be.DATASETS), default="pamap2")
     ap.add_argument("--tags", nargs="*", default=["e2e", "zero/e2e"], help="tags given to bhar_e2e.py")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     args = ap.parse_args()
+    be.set_dataset(args.dataset)
     dirs = {"opportunistic": None, "BHAR": be.BHAR_POLICY}
     dirs.update({t: be.out_policy_dir(t) for t in args.tags})
 

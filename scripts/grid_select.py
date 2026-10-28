@@ -21,8 +21,9 @@ METHOD = "conservative-asynchronous_multisensor_time_context"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("tags", nargs="+")
+    ap.add_argument("--dataset", default="pamap2")
     args = ap.parse_args()
-    base = os.path.join(ART, "saved_data", "results", "pamap2", "tinyhar")
+    base = os.path.join(ART, "saved_data", "results", args.dataset, "tinyhar")
     res = {t: load(os.path.join(base, t, METHOD)) for t in args.tags}
     seeds = sorted(set.intersection(*(set(r) for r in res.values())))
     per_seed, picks = [], Counter()

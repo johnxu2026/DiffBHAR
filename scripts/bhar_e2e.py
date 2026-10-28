@@ -1,5 +1,5 @@
 """Train BHAR's conservative policy parameters with gradients instead of pattern search,
-inside BHAR's own PAMAP2 + TinyHAR setup, and save them where BHAR's code will pick them up.
+inside BHAR's own setup (TinyHAR; PAMAP2 by default, --dataset for DSADS, RWHAR, Opportunity), and save them where BHAR's code will pick them up.
 
 For each test subject: same train sequence as train_har_policy.py (same seed), the classifier
 (TinyHAR) is frozen, and theta is trained on the held-prediction loss (diffbhar.pipeline.run_e2e)
@@ -84,23 +84,44 @@ from diffbhar.pipeline import run_e2e  # noqa: E402
 from diffbhar.policies import DiffConservativePolicy, NeuralPolicy  # noqa: E402
 from diffbhar.sim import SimConfig, simulate  # noqa: E402
 
-# settings of experiments/posttraining_scripts/conservative_time_context-pamap2.sh
-BODY_PARTS = ["hand", "chest", "ankle"]
-KW = dict(dataset="pamap2", architecture="tinyhar", sensors=["acc"], body_parts=BODY_PARTS,
-          activities=list(range(12)), val_frac=0.2, window_size=8)
-SUBJECTS = list(range(1, 9))
+# settings of experiments/posttraining_scripts/conservative-asynchronous_multisensor_time_context-<dataset>.sh
+# (energy model and sampling rate are the same for all four; ft_* = classifier finetuning, which
+# --rounds runs with shuffled batches; BHAR's final finetuning samples by class weight except on PAMAP2)
+DATASETS = {
+    "pamap2": dict(subjects=list(range(1, 9)), body_parts=["hand", "chest", "ankle"],
+                   activities=list(range(12)), val_frac=0.2, ft_bs=32, ft_lr=3e-4),
+    "dsads": dict(subjects=list(range(1, 9)), body_parts=["torso", "right_arm", "left_arm", "right_leg", "left_leg"],
+                  activities=list(range(19)), val_frac=0.1, ft_bs=32, ft_lr=3e-4),
+    "rwhar": dict(subjects=[1, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15],
+                  body_parts=["chest", "forearm", "head", "shin", "thigh", "upperarm", "waist"],
+                  activities=list(range(8)), val_frac=0.25, ft_bs=32, ft_lr=3e-4),
+    "opportunity": dict(subjects=[1, 2, 3, 4], body_parts=["BACK", "RUA", "RLA", "LUA", "LLA", "L-SHOE", "R-SHOE"],
+                        activities=list(range(5)), val_frac=0.1, ft_bs=16, ft_lr=1e-3),
+}
 SEG = 100 * 25                     # BHAR's policy training segment, 100 s
-CKPT = os.path.join(ART, "saved_data", "checkpoints", "pamap2")
-BHAR_POLICY = os.path.join(CKPT, "conservative-asynchronous_single_sensor")
-BHAR_CLF = os.path.join(CKPT, "tinyhar", "conservative-asynchronous_multisensor_time_context")
-PRETRAINED_CLF = os.path.join(ART, "saved_data_cached", "checkpoints", "pamap2", "tinyhar",
-                              "multisensor_classifier_window_8_acc")
+
+
+def set_dataset(name):
+    """Point the module-level settings and paths at one of BHAR's datasets."""
+    global DATASET, BODY_PARTS, KW, SUBJECTS, FT, CKPT, BHAR_POLICY, BHAR_CLF, PRETRAINED_CLF
+    d = DATASETS[name]
+    DATASET, BODY_PARTS, SUBJECTS, FT = name, d["body_parts"], d["subjects"], (d["ft_bs"], d["ft_lr"])
+    KW = dict(dataset=name, architecture="tinyhar", sensors=["acc"], body_parts=BODY_PARTS,
+              activities=d["activities"], val_frac=d["val_frac"], window_size=8)
+    CKPT = os.path.join(ART, "saved_data", "checkpoints", name)
+    BHAR_POLICY = os.path.join(CKPT, "conservative-asynchronous_single_sensor")
+    BHAR_CLF = os.path.join(CKPT, "tinyhar", "conservative-asynchronous_multisensor_time_context")
+    PRETRAINED_CLF = os.path.join(ART, "saved_data_cached", "checkpoints", name, "tinyhar",
+                                  "multisensor_classifier_window_8_acc")
+
+
+set_dataset("pamap2")
 
 
 def out_policy_dir(tag):
     """Where BHAR looks for the policy when run with logging prefix <tag>/<method>:
     two levels above pamap2/tinyhar/<tag>/<method> (train_har_policy.py, dataset_level_dir)."""
-    level = os.path.dirname(os.path.dirname(os.path.join("pamap2", "tinyhar", tag, "method")))
+    level = os.path.dirname(os.path.dirname(os.path.join(DATASET, "tinyhar", tag, "method")))
     return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
@@ -109,7 +130,7 @@ def sequences(test_subject, seed, test=False, per_subject=False):
     labels), generated as in train_har_policy.py (same seed, in the order train, val, test).
     per_subject: then also one train and one validation sequence per training subject (made after
     BHAR's, so those stay the same), as two lists."""
-    kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT["pamap2"]), "preprocessed_data"),
+    kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT[DATASET]), "preprocessed_data"),
               subjects=[s for s in SUBJECTS if s != test_subject], normalize=False)
     dss = [HARClassifierDataset(**kw, train=True, val=False), HARClassifierDataset(**kw, train=False, val=True)]
     if test:
@@ -175,7 +196,7 @@ def distill(student, teacher, X, y, ehs, cfg, rng, dev, steps, batch_size):
     opt = torch.optim.Adam(student.parameters(), lr=1e-2)
     for it in range(steps):
         _, _, hb = sample_batch(X, y, ehs, rng, batch_size)
-        idx = torch.arange(3, device=dev).repeat(batch_size)
+        idx = torch.arange(len(BODY_PARTS), device=dev).repeat(batch_size)
         teacher.sensor_index = student.sensor_index = idx
         rec = Recorder(teacher if it < steps // 2 else student)
         with torch.no_grad():
@@ -205,7 +226,7 @@ def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
     """BHAR's classifier finetuning (train_har_policy.py) on the packets of the thetas, in place.
     A theta is [theta_e, theta_p] per sensor, or ["neural", "<file.pt>#<sensor>"] (scripts/bhar_hook.py)."""
     loaders = []
-    for (X, y), shuffle, bs in ((train_seq, True, 32), (val_seq, False, 128)):
+    for (X, y), shuffle, bs in ((train_seq, True, FT[0]), (val_seq, False, 128)):
         data = {bp: X[i] for i, bp in enumerate(BODY_PARTS)}
         dss = []
         for theta in thetas:
@@ -218,7 +239,7 @@ def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
     wrapped = TemporalContextModel(model, dev)
     for p in model.parameters():
         p.requires_grad_(True)
-    opt = torch.optim.Adam(model.parameters(), lr=3e-4)
+    opt = torch.optim.Adam(model.parameters(), lr=FT[1])
     dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.float32)
     train(model=wrapped, loss_fn=torch.nn.CrossEntropyLoss(), optimizer=opt, train_logname=logname,
@@ -234,7 +255,8 @@ def finetune(model, thetas, train_seq, val_seq, ehs, logname, logger, dev):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--subjects", type=int, nargs="+", default=SUBJECTS, help="test subjects")
+    ap.add_argument("--dataset", choices=list(DATASETS), default="pamap2")
+    ap.add_argument("--subjects", type=int, nargs="+", default=None, help="test subjects (default: all)")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--segments", type=int, default=64, help="100 s segments per epoch")
     ap.add_argument("--batch_size", type=int, default=16)
@@ -273,6 +295,9 @@ def main():
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
+    set_dataset(args.dataset)
+    args.subjects = args.subjects or SUBJECTS
+    N = len(BODY_PARTS)
     out_dir = out_policy_dir(args.tag)
     if out_dir == BHAR_POLICY:
         sys.exit("this tag would overwrite BHAR's own policy files")
@@ -280,7 +305,7 @@ def main():
         sys.exit("--dro does not support --rf")
     torch.set_default_dtype(torch.float64)
     dev = torch.device(args.device)
-    logger = init_logger(f"pamap2/tinyhar/{args.tag}/policy_train_seed{args.seed}")
+    logger = init_logger(f"{DATASET}/tinyhar/{args.tag}/policy_train_seed{args.seed}")
     logger.info(str(vars(args)))
 
     cfg = SimConfig(feas_kappa=args.kappa, delta_grad=not args.no_delta_grad)
@@ -329,11 +354,11 @@ def main():
 
         def make_policy(theta, noise):
             if args.policy == "neural":
-                p = NeuralPolicy(torch.arange(3), 3, hidden=args.hidden, noise=noise)
+                p = NeuralPolicy(torch.arange(N), N, hidden=args.hidden, noise=noise)
                 if theta is not None:
                     p.load_state_dict(theta, strict=False)
                 return p.to(dev)
-            return DiffConservativePolicy(torch.arange(3), 3, init=theta, scale=args.scale, noise=noise).to(dev)
+            return DiffConservativePolicy(torch.arange(N), N, init=theta, scale=args.scale, noise=noise).to(dev)
 
         def val_acc(theta):
             """Held-prediction accuracy, packets/s/sensor and loss_task on the whole validation sequence."""
@@ -344,7 +369,7 @@ def main():
                 if args.dro > 0:   # the worst training subject, on its own validation data
                     vl = max(run_e2e(*v, pv, clf, cfg, len(KW["activities"]), train=False,
                                      counterfactual=False).loss_task.item() for v in val_g)
-            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (3 * len(yv) / cfg.fs), vl
+            return (o.preds[0] == yv).mean(), o.sim.a.sum().item() / (N * len(yv) / cfg.fs), vl
 
         def score(acc, pkt, loss):
             """Validation selection; with --pkt the training objective itself, so both agree."""
@@ -352,7 +377,7 @@ def main():
 
         pol = make_policy(None if args.policy == "neural" else th0, True)
         if args.policy == "neural":
-            teacher = DiffConservativePolicy(torch.arange(3), 3, init=th0, scale=args.scale, noise=False).to(dev)
+            teacher = DiffConservativePolicy(torch.arange(N), N, init=th0, scale=args.scale, noise=False).to(dev)
             sends, holds = distill(pol, teacher, X, y, ehs, cfg, rng, dev, args.distill, args.batch_size)
             logger.info(f"  neural policy imitates init theta: repeats {sends:.3f} of its sends, {holds:.3f} of its holds")
         start = snapshot(pol)
@@ -375,9 +400,9 @@ def main():
                 else:
                     thetas = [theta]
                 if ep == 0:
-                    thetas += np.random.default_rng([args.seed, s]).uniform(0, 400, (args.rand_ft, 3, 2)).tolist()
+                    thetas += np.random.default_rng([args.seed, s]).uniform(0, 400, (args.rand_ft, N, 2)).tolist()
                 finetune(model, thetas, (X, y), (Xv, yv), ehs,
-                         f"pamap2/tinyhar/{args.tag}/alternating_clf_{name}", logger, dev)
+                         f"{DATASET}/tinyhar/{args.tag}/alternating_clf_{name}", logger, dev)
                 for p in model.parameters():
                     p.requires_grad_(args.clf_lr > 0)
                 acc, pkt, vl = val_acc(theta)
@@ -394,7 +419,7 @@ def main():
                 else:
                     xb, yb, hb = (t.to(dev).repeat_interleave(k, 0)
                                   for t in sample_batch(X, y, ehs, rng, args.batch_size // k))
-                pol.sensor_index = torch.arange(3, device=dev).repeat(len(yb))
+                pol.sensor_index = torch.arange(N, device=dev).repeat(len(yb))
                 o = run_e2e(xb, yb, hb, pol, clf, cfg, len(KW["activities"]), train=True)
                 opt.zero_grad()
                 task = o.loss_task
@@ -440,7 +465,7 @@ def main():
             pickle.dump({"best": dict(zip(BODY_PARTS, saved)), "init": dict(zip(BODY_PARTS, th0)),
                          "best_val_acc": float(best[0]), "best_epoch": best[1]}, f)
         if args.save_clf:
-            d = os.path.join(ART, "saved_data", "checkpoints", "pamap2", "tinyhar", args.tag,
+            d = os.path.join(ART, "saved_data", "checkpoints", DATASET, "tinyhar", args.tag,
                              "conservative-asynchronous_multisensor_time_context")
             os.makedirs(d, exist_ok=True)
             torch.save({"model_state_dict": {"multisensor_model." + k: v for k, v in best[3].items()}},
