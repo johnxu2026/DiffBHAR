@@ -339,10 +339,11 @@ def main():
         sd = {k.removeprefix("multisensor_model."): v
               for k, v in torch.load(clf_path, map_location=dev)["model_state_dict"].items()}
         res = model.load_state_dict(sd, strict=False)
-        if res.unexpected_keys or len(res.missing_keys) == len(model.state_dict()):
+        if len(res.missing_keys) == len(model.state_dict()):
             sys.exit(f"classifier checkpoint does not match TinyHAR: {res}")
-        if res.missing_keys:
-            logger.info(f"not in checkpoint (kept at init, as in BHAR): {res.missing_keys}")
+        if res.missing_keys or res.unexpected_keys:   # BHAR loads with strict=False too (model_builder.py)
+            logger.info(f"not in checkpoint (kept at init, as in BHAR): {res.missing_keys}; "
+                        f"ignored, as in BHAR: {res.unexpected_keys}")
         model.eval()                                   # no dropout, also when training it jointly
         for p in model.parameters():
             p.requires_grad_(args.clf_lr > 0)
