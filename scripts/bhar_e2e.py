@@ -49,6 +49,12 @@ replaces the two-parameter rule. It first imitates the --init theta for --distil
 starts where BHAR is, then trains like theta. BHAR replays it through scripts/bhar_hook.py, which
 bhar_posttrain.sh always runs (other policies are untouched).
 
+Generalisation to new people (2026-10-29: on Opportunity, with 3 training people, training made the
+policy worse on the test person): --resample R trains on BHAR's train sequence and R more random
+orderings of the same training data, so the policy cannot fit one sequence's timing; --anchor w adds
+w * KL(send probabilities || those of the start policy) on the visited states, so training only moves
+away from the start where the loss gain pays for it. Validation and BHAR's evaluation are unchanged.
+
 Then run BHAR's finetuning and evaluation on the new theta, with the same --tag:
 
     python scripts/bhar_e2e.py --seed 0 --init zero --tag zero/e2e
@@ -125,11 +131,13 @@ def out_policy_dir(tag):
     return os.path.join(ART, "saved_data", "checkpoints", level, "conservative-asynchronous_single_sensor")
 
 
-def sequences(test_subject, seed, test=False, per_subject=False):
+def sequences(test_subject, seed, test=False, per_subject=False, extra=0):
     """Train and validation (and test) sequences, each ([b, L, 3] raw data, as BHAR uses it, and
     labels), generated as in train_har_policy.py (same seed, in the order train, val, test).
     per_subject: then also one train and one validation sequence per training subject (made after
-    BHAR's, so those stay the same), as two lists."""
+    BHAR's, so those stay the same), as two lists.
+    extra: then also a list of that many more train sequences, the same training data in other
+    random orders and activity durations (made last, so all the others stay the same)."""
     kw = dict(KW, dataset_dir=os.path.join(os.path.expanduser(DATA_ROOT[DATASET]), "preprocessed_data"),
               subjects=[s for s in SUBJECTS if s != test_subject], normalize=False)
     dss = [HARClassifierDataset(**kw, train=True, val=False), HARClassifierDataset(**kw, train=False, val=True)]
@@ -147,6 +155,10 @@ def sequences(test_subject, seed, test=False, per_subject=False):
            for ds in dss]
     if per_subject:
         out += [[make(ds.raw_data[k], ds.raw_labels[k], ds) for k in ds.raw_data] for ds in dss[:2]]
+    if extra:
+        tr = dss[0]
+        out.append([make(np.concatenate(list(tr.raw_data.values())), np.concatenate(list(tr.raw_labels.values())), tr)
+                    for _ in range(extra)])
     return out
 
 
@@ -213,6 +225,26 @@ def distill(student, teacher, X, y, ehs, cfg, rng, dev, steps, batch_size):
     sends = ((lg >= 0) & pos).sum().item() / max(pos.sum().item(), 1)
     holds = ((lg < 0) & neg).sum().item() / max(neg.sum().item(), 1)
     return sends, holds
+
+
+class Anchor(torch.nn.Module):
+    """Wraps a policy and keeps the KL divergence of its send probabilities from those of a frozen
+    reference policy (the start) on the states it visits, for the --anchor penalty."""
+
+    def __init__(self, policy, ref):
+        super().__init__()
+        self.policy, self.ref, self.kl = policy, ref, []
+
+    def forward(self, f):
+        lg = self.policy(f)
+        with torch.no_grad():
+            l0 = self.ref(f)
+        p = torch.sigmoid(lg)
+        self.kl.append(p * (F.logsigmoid(lg) - F.logsigmoid(l0)) + (1 - p) * (F.logsigmoid(-lg) - F.logsigmoid(-l0)))
+        return lg
+
+    def binarize(self, logit, train=True):
+        return self.policy.binarize(logit, train)
 
 
 def snapshot(pol):
@@ -292,6 +324,10 @@ def main():
     ap.add_argument("--neural_lr", type=float, default=1e-3, help="neural: learning rate")
     ap.add_argument("--distill", type=int, default=100,
                     help="neural: batches spent imitating the --init theta before training")
+    ap.add_argument("--resample", type=int, default=0,
+                    help="> 0: train on BHAR's train sequence and this many more orderings of the same training data")
+    ap.add_argument("--anchor", type=float, default=0.0,
+                    help="> 0: weight of the KL of the send probabilities from the start policy (stay near the start)")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
@@ -319,7 +355,8 @@ def main():
         torch.manual_seed(args.seed)
         rng = np.random.default_rng(args.seed)
         name = f"[{s}]_seed{args.seed}"
-        (X, y), (Xv, yv), *groups = sequences(s, args.seed, per_subject=args.dro > 0)
+        (X, y), (Xv, yv), *groups = sequences(s, args.seed, per_subject=args.dro > 0, extra=args.resample)
+        train_seqs = [(X, y)] + (groups.pop() if args.resample else [])
         val = [torch.tensor(a)[None].to(dev) for a in (Xv, yv, harvest(Xv, ehs))]
         if args.dro > 0:
             train_g = groups[0]
@@ -382,6 +419,9 @@ def main():
             sends, holds = distill(pol, teacher, X, y, ehs, cfg, rng, dev, args.distill, args.batch_size)
             logger.info(f"  neural policy imitates init theta: repeats {sends:.3f} of its sends, {holds:.3f} of its holds")
         start = snapshot(pol)
+        ref = make_policy(start if args.policy == "neural" else th0, False)
+        for p in ref.parameters():
+            p.requires_grad_(False)
         groups = [dict(params=pol.parameters(), lr=args.lr if args.policy == "conservative" else args.neural_lr)]
         if args.clf_lr > 0:
             groups.append(dict(params=model.parameters(), lr=args.clf_lr))
@@ -418,10 +458,12 @@ def main():
                     xb, yb, hb = (torch.cat(t).to(dev) for t in
                                   zip(*(sample_batch(xg, yg, ehs, rng, n) for xg, yg in train_g)))
                 else:
+                    Xs, ys = train_seqs[rng.integers(len(train_seqs))] if args.resample else (X, y)
                     xb, yb, hb = (t.to(dev).repeat_interleave(k, 0)
-                                  for t in sample_batch(X, y, ehs, rng, args.batch_size // k))
-                pol.sensor_index = torch.arange(N, device=dev).repeat(len(yb))
-                o = run_e2e(xb, yb, hb, pol, clf, cfg, len(KW["activities"]), train=True)
+                                  for t in sample_batch(Xs, ys, ehs, rng, args.batch_size // k))
+                pol.sensor_index = ref.sensor_index = torch.arange(N, device=dev).repeat(len(yb))
+                run_pol = Anchor(pol, ref) if args.anchor > 0 else pol
+                o = run_e2e(xb, yb, hb, run_pol, clf, cfg, len(KW["activities"]), train=True)
                 opt.zero_grad()
                 task = o.loss_task
                 if args.dro > 0:
@@ -437,6 +479,8 @@ def main():
                     # log-probability of the decisions that mattered (sensor free and charged)
                     logp = o.sim.feasible * (a * F.logsigmoid(lg) + (1 - a) * F.logsigmoid(-lg))
                     loss = loss + args.rf * (adv * logp.view(len(yb), -1).sum(1)).mean()
+                if args.anchor > 0:
+                    loss = loss + args.anchor * torch.stack(run_pol.kl).mean()
                 if args.pkt > 0:
                     loss = loss + args.pkt * o.sim.a.sum() / (o.sim.a.shape[0] * SEG / 25)
                 loss.backward()
