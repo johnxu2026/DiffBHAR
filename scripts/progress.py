@@ -3,6 +3,7 @@
     python scripts/progress.py altr/e2e altr6/e2e
     python scripts/progress.py --dataset dsads nn100/e2e         (other datasets; default pamap2)
     python scripts/progress.py --dataset dsads,rwhar,opportunity bhar   (BHAR's own runs, no tag)
+    python scripts/progress.py bhar512/e2e      (BHAR's own runs under a tag, e.g. POLICY_EPOCHS=512)
 """
 import glob
 import os
@@ -57,11 +58,17 @@ for dataset in datasets:
         for seed in range(3):
             name = f"{pre}{tag} seed{seed}"
             log = latest(os.path.join(logs, tag, f"policy_train_seed{seed}_*.log"))
-            if log is None:
-                print(f"{name}: not started")
-                continue
             if os.path.exists(os.path.join(results, tag, f"conservative-{METHOD}", f"results_seed{seed}.pickle")):
                 print(f"{name}: DONE")
+                continue
+            ft = latest(os.path.join(logs, tag, f"conservative-{METHOD}", f"train_log_seed{seed}_*.log"))
+            if log is None and ft is not None:   # bhar_posttrain.sh alone under a tag (e.g. bhar512/e2e)
+                ls = lines(ft)
+                n = sum("Test Group" in l for l in ls)
+                print(f"{name}: BHAR policy search + finetune, subject {max(n, 1)}/{N} | last log: {last_line(ls)}")
+                continue
+            if log is None:
+                print(f"{name}: not started")
                 continue
             ls = lines(log)
             n_theta = sum("saved theta" in l for l in ls)
