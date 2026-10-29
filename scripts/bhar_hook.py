@@ -42,6 +42,7 @@ def sparsify_data(self, policy, data):
     with torch.no_grad():
         o = simulate(torch.tensor(self.e_harvest, dtype=torch.float64)[None], pol, cfg, train=False)
     k = o.ticks[o.a[0] > 0.5].numpy()
+    self.n_feasible = int(o.feasible.sum())   # decisions with E >= E_th (only these need the network)
     # a packet decided at step k covers samples k+1 .. k+w, as in BHAR's send_packet
     self.packet_idxs = np.stack([k + 1, k + 1 + self.packet_size]).T
     return self.packet_idxs

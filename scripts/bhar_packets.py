@@ -5,6 +5,9 @@ test sequence (same seed and order as train_har_policy.py) and replays every lea
 with BHAR's own sensor simulator.
 
 usage:  python scripts/bhar_packets.py [--dataset pamap2] [--tags e2e zero/e2e] [--seeds 0 1 2]
+
+For neural policies it also prints the fraction of policy steps with E >= E_th, i.e. how often
+the network has to run if the sensor skips it when no packet is affordable.
 """
 import argparse
 import os
@@ -31,6 +34,7 @@ def main():
                                     cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                     cfg.policy_frequency, cfg.init_energy)
     rate = {m: {} for m in dirs}                    # method -> seed -> [packets/s/sensor per subject]
+    duty = {m: [0, 0] for m in dirs}                # method -> [steps with E >= E_th, policy steps]
     for seed in args.seeds:
         for s in be.SUBJECTS:
             X, y = be.sequences(s, seed, test=True)[2]
@@ -45,7 +49,12 @@ def main():
                         th = pickle.load(f)["best"]
                     pol = {bp: f"conservative_{th[bp][0]}_{th[bp][1]}" if th[bp][0] == "neural"
                            else f"conservative_{float(th[bp][0])}_{float(th[bp][1])}" for bp in be.BODY_PARTS}
-                n = sum(len(ehs.sparsify_data(pol[bp], X[i])) for i, bp in enumerate(be.BODY_PARTS))
+                n = 0
+                for i, bp in enumerate(be.BODY_PARTS):
+                    n += len(ehs.sparsify_data(pol[bp], X[i]))
+                    if pol[bp].startswith(bhar_hook.PREFIX):
+                        duty[m][0] += ehs.n_feasible
+                        duty[m][1] += len(X[i]) // cfg.policy_period
                 rate[m].setdefault(seed, []).append(n / (len(be.BODY_PARTS) * len(y) / cfg.fs))
 
     print("packets per second per sensor on the test subjects: mean over subjects, then mean +- std over seeds")
@@ -53,6 +62,9 @@ def main():
         per_seed = [np.mean(v) for v in r.values() if len(v) == len(be.SUBJECTS)]
         if per_seed:
             print(f"{m:16s} {len(per_seed)} seeds  {np.mean(per_seed):.4f} +- {np.std(per_seed):.4f}")
+    for m, (f, t) in duty.items():
+        if t:
+            print(f"{m:16s} network runs on {f / t:.1%} of policy steps (E >= E_th)")
 
 
 if __name__ == "__main__":
