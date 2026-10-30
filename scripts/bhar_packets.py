@@ -24,13 +24,14 @@ def main():
     ap.add_argument("--dataset", choices=list(be.DATASETS), default="pamap2")
     ap.add_argument("--tags", nargs="*", default=["e2e", "zero/e2e"], help="tags given to bhar_e2e.py")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    ap.add_argument("--efficiency", type=float, default=0.5, help="harvesting efficiency the policies were run with")
     args = ap.parse_args()
     be.set_dataset(args.dataset)
-    dirs = {"opportunistic": None, "BHAR": be.BHAR_POLICY}
+    dirs = {"opportunistic": None, "BHAR": be.BHAR_POLICY} if args.efficiency == 0.5 else {"opportunistic": None}
     dirs.update({t: be.out_policy_dir(t) for t in args.tags})
 
     cfg = be.SimConfig()
-    ehs = be.EnergyHarvestingSensor(be.EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
+    ehs = be.EnergyHarvestingSensor(be.EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=args.efficiency),
                                     cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                     cfg.policy_frequency, cfg.init_energy)
     rate = {m: {} for m in dirs}                    # method -> seed -> [packets/s/sensor per subject]

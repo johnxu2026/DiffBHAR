@@ -328,6 +328,8 @@ def main():
                     help="> 0: train on BHAR's train sequence and this many more orderings of the same training data")
     ap.add_argument("--anchor", type=float, default=0.0,
                     help="> 0: weight of the KL of the send probabilities from the start policy (stay near the start)")
+    ap.add_argument("--efficiency", type=float, default=0.5,
+                    help="harvesting efficiency, as HARVEST_EFF for bhar_posttrain.sh (BHAR's sensitivity study: 0.25)")
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
@@ -345,7 +347,7 @@ def main():
     logger.info(str(vars(args)))
 
     cfg = SimConfig(feas_kappa=args.kappa, delta_grad=not args.no_delta_grad)
-    ehs = EnergyHarvestingSensor(EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=0.5),
+    ehs = EnergyHarvestingSensor(EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=args.efficiency),
                                  cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                  cfg.policy_frequency, cfg.init_energy)
     os.makedirs(out_dir, exist_ok=True)

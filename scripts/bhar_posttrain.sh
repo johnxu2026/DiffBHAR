@@ -6,6 +6,7 @@
 # usage:  bash scripts/bhar_posttrain.sh {conservative|opportunistic} SEED {cached|scratch} [TAG] [DATASET]
 #   DATASET: pamap2 (default), dsads, rwhar or opportunity; TAG may be "" to give a DATASET
 #   env POLICY_EPOCHS overrides BHAR's pattern-search epochs (budget control)
+#   env HARVEST_EFF overrides the harvesting efficiency (default 0.5; BHAR's sensitivity study uses 0.25)
 #   cached:  reuse BHAR's learned policy and finetuned classifier (evaluation only)
 #   scratch: learn the policy (pattern search) and finetune the classifier again
 #   TAG:     run under <TAG>/<method>; BHAR then looks for the policy in
@@ -52,6 +53,7 @@ python ../../../scripts/bhar_hook.py train_har_policy.py \
   --window_size 8 \
   --harvesting_sensor_window_size 8 \
   --leakage 6.6e-6 \
+  --harvest_efficiency "${HARVEST_EFF:-0.5}" \
   --policy_frequency 5 \
   --init_energy 0 \
   --sampling_frequency 25 \
