@@ -14,7 +14,8 @@ the best one is kept, as BHAR keeps its best validated policy. Two starting poin
 
 Joint training (--clf_lr > 0) also updates the classifier, on loss_task + lam * loss_active
 (BHAR's finetuning loss); with --save_clf the trained classifier is written where BHAR looks for
-its finetuned one, so BHAR evaluates it as is instead of finetuning again.
+its finetuned one, so BHAR evaluates it as is instead of finetuning again. With --clf_active_only
+the classifier learns from loss_active only and the policy from loss_task only.
 
 Score-function gradient (--rf > 0): the straight-through gradient only sees the immediate
 effect of a packet; the energy it spends shows up later, when some future packet is no longer
@@ -301,6 +302,9 @@ def main():
     ap.add_argument("--clf_lr", type=float, default=0.0, help="> 0: joint training of theta and the classifier")
     ap.add_argument("--lam", type=float, default=1.0, help="weight of loss_active in joint training")
     ap.add_argument("--save_clf", action="store_true", help="joint: BHAR evaluates our classifier, no finetuning")
+    ap.add_argument("--clf_active_only", action="store_true",
+                    help="joint: the classifier learns from loss_active only (BHAR's finetuning loss), "
+                         "the policy from loss_task only")
     ap.add_argument("--ste", type=float, default=1.0, help="weight of the straight-through gradient")
     ap.add_argument("--rf", type=float, default=0.0, help="> 0: weight of the score-function gradient")
     ap.add_argument("--rf_k", type=int, default=4, help="random runs per segment for --rf")
@@ -473,7 +477,11 @@ def main():
                     q = q * torch.exp(args.dro * ls_g.detach())
                     q = q / q.sum()
                     task = (q * ls_g).sum()
-                loss = args.ste * task + (args.lam * o.loss_active if args.clf_lr > 0 else 0)
+                joint_active = args.clf_lr > 0 and not args.clf_active_only
+                loss = args.ste * task + (args.lam * o.loss_active if joint_active else 0)
+                if args.clf_lr > 0 and args.clf_active_only:
+                    clf_params = list(model.parameters())
+                    g_clf = torch.autograd.grad(o.loss_active, clf_params, retain_graph=True, allow_unused=True)
                 if args.rf > 0:
                     ls = o.loss_seq.detach().view(-1, k)
                     adv = (ls - (ls.sum(1, keepdim=True) - ls) / (k - 1)).view(-1)
@@ -486,6 +494,9 @@ def main():
                 if args.pkt > 0:
                     loss = loss + args.pkt * o.sim.a.sum() / (o.sim.a.shape[0] * SEG / 25)
                 loss.backward()
+                if args.clf_lr > 0 and args.clf_active_only:
+                    for p, g in zip(clf_params, g_clf):        # replace loss_task's gradient on the classifier
+                        p.grad = g
                 opt.step()
                 if args.policy == "conservative":
                     with torch.no_grad():
