@@ -43,7 +43,7 @@ def main():
              for p in glob.glob(os.path.join(base, "**", "results_seed*.pickle"), recursive=True)}
     methods = args.methods or sorted(m for m in found if "ablation" not in m and "classifier" not in m)
     print(f"{args.dataset} / {args.arch}: mean over subjects, then mean +- std over seeds")
-    print(f"{'method':56s} {'seeds':>5s} {'acc':>13s} {'F1':>13s} {'R_active':>8s} {'eps_a':>6s} {'eps_p':>6s}")
+    print(f"{'method':56s} {'seeds':>5s} {'acc':>13s} {'F1':>13s} {'R_active':>8s} {'eps_a':>6s} {'eps_p':>6s} {'actErr':>6s} {'pasErr':>6s}")
     for m in methods:
         res = load(os.path.join(base, m))
         if not res:
@@ -51,8 +51,11 @@ def main():
         # [seeds, fields]: mean over subjects for each seed
         per_seed = np.stack([np.mean(list(r.values()), axis=0) for r in res.values()])
         mu, sd = per_seed.mean(0), per_seed.std(0)
+        # BHAR Fig. 6 stacked bars: 1 - acc = R_active*eps_a (green) + R_passive*eps_p (red)
+        act = np.mean([np.nanmean([v[2] * v[4] for v in r.values()]) for r in res.values()])
+        pas = np.mean([np.nanmean([v[3] * np.nan_to_num(v[5]) for v in r.values()]) for r in res.values()])
         print(f"{m:56s} {len(res):5d} {mu[1]:.3f}+-{sd[1]:.3f} {mu[0]:.3f}+-{sd[0]:.3f} "
-              f"{mu[2]:8.3f} {mu[4]:6.3f} {mu[5]:6.3f}")
+              f"{mu[2]:8.3f} {mu[4]:6.3f} {mu[5]:6.3f} {act:6.3f} {pas:6.3f}")
         if args.per_subject:
             subs = sorted(next(iter(res.values())))
             accs = {s: np.mean([res[k][s][1] for k in res if s in res[k]]) for s in subs}
