@@ -834,4 +834,5 @@ seed 0：8 个受试者里 3 个保存了起点；其余 5 个里，胸和脚踝
 - Opportunity：jnn100 .567 ± .010 / .532 / .331 / .102，nn100 .555 / .541，BHAR .581 / .544 → 准确率比 nn100 高 1.2，但 F1 低 0.9，仍低于 BHAR。
 - RWHAR：jnn100 .640 ± .013 / .651 / .203 / .157，nn100 .635 / .647，BHAR .638 / .653 → 比 nn100 高 0.5，和 BHAR 打平。
 - **小结（jnn100 对 BHAR 的准确率）**：PAMAP2 +1.1，DSADS +1.2，RWHAR +0.2，Opportunity −1.4；对 nn100 是 +0.6 / +0.1 / +0.5 / +1.2，四个数据集都不差 → 主方法改用 jnn100（发包数待统计）。
-- **发包数**：DSADS jnn100 .163（nn100 .153，BHAR .178 → 比 BHAR 少 8%，nn100 是 14%），网络运行 47.7%；RWHAR jnn100 .163（nn100 .155，BHAR .255 → 比 BHAR 少 36%，nn100 是 39%），网络运行 56.6%；Opportunity 在算。
+- **发包数**：DSADS jnn100 .163（nn100 .153，BHAR .178 → 比 BHAR 少 8%，nn100 是 14%），网络运行 47.7%；RWHAR jnn100 .163（nn100 .155，BHAR .255 → 比 BHAR 少 36%，nn100 是 39%），网络运行 56.6%；Opportunity jnn100 .111（nn100 .111，BHAR .123 → 少 10%），网络运行 30.7%。
+- **结论**：joint 在 PAMAP2/DSADS/RWHAR 上多发 4–7% 的包换 +0.1–0.6 准确率，Opportunity 包相同、准确率 +1.2。论文里两个都报：nn100（只训策略，包最少）和 jnn100（joint，准确率最高）。总表 report/results_table.{tex,pdf}。

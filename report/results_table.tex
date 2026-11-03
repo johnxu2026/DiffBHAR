@@ -1,0 +1,19 @@
+\documentclass[border=6pt]{standalone}
+\usepackage{booktabs}
+\begin{document}
+\small
+\begin{tabular}{lcccc}
+\toprule
+ & PAMAP2 & DSADS & RWHAR & Opportunity \\
+\midrule
+Opportunistic & .510 / .454 / .261 & .547 / .526 / .257 & .614 / .636 / .332 & .575 / .537 / .139 \\
+BHAR & .573$\pm$.004 / .522 / .196 & .575$\pm$.007 / .564 / .178 & .638$\pm$.013 / .653 / .255 & .581$\pm$.023 / .544 / .123 \\
+Fixed (0,100), no training & .574$\pm$.005 / .532 / .137 & .577$\pm$.016 / .566 / .147 & .625$\pm$.012 / .638 / .145 & .574$\pm$.007 / .560 / .108 \\
+\textbf{Ours, policy only} (nn100) & .578$\pm$.005 / .531 / .144 & .586$\pm$.012 / .574 / .153 & .635$\pm$.016 / .647 / .155 & .555$\pm$.020 / .541 / .111 \\
+\textbf{Ours, joint} (jnn100) & .584$\pm$.004 / .531 / .149 & .587$\pm$.015 / .574 / .163 & .640$\pm$.013 / .651 / .163 & .567$\pm$.010 / .532 / .111 \\
+\midrule
+Policy only vs.\ BHAR (acc / packets) & +0.5 / $-$27\% & +1.1 / $-$14\% & $-$0.3 / $-$39\% & $-$2.6 / $-$9\% \\
+Joint vs.\ BHAR (acc / packets) & +1.1 / $-$24\% & +1.2 / $-$8\% & +0.2 / $-$36\% & $-$1.4 / $-$10\% \\
+\bottomrule
+\end{tabular}
+\end{document}
