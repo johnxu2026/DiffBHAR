@@ -25,9 +25,12 @@ def main():
     ap.add_argument("--tags", nargs="*", default=["e2e", "zero/e2e"], help="tags given to bhar_e2e.py")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--efficiency", type=float, default=0.5, help="harvesting efficiency the policies were run with")
+    ap.add_argument("--no_baselines", action="store_true", help="skip opportunistic and BHAR (already counted)")
     args = ap.parse_args()
     be.set_dataset(args.dataset)
     dirs = {"opportunistic": None, "BHAR": be.BHAR_POLICY} if args.efficiency == 0.5 else {"opportunistic": None}
+    if args.no_baselines:
+        dirs = {}
     dirs.update({t: be.out_policy_dir(t) for t in args.tags})
 
     cfg = be.SimConfig()
