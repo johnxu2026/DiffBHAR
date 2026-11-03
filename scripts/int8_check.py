@@ -91,9 +91,7 @@ def main():
     c = be.SimConfig()
     ehs = be.EnergyHarvestingSensor(be.EnergyHarvester(tx_thresh=c.tx_thresh), c.packet_size, c.leakage,
                                     c.fs, c.max_energy, c.policy_frequency, c.init_energy)
-    cfg = SimConfig(packet_size=ehs.packet_size, leakage=ehs.leakage, fs=ehs.FS, max_energy=ehs.MAX_E,
-                    policy_frequency=ehs.FS // ehs.policy_period, tx_thresh=ehs.thresh,
-                    init_energy=ehs.init_energy)
+    cfg = c                      # same defaults as bhar_e2e.py / BHAR (thresh set only after init_harvester)
     N = len(be.BODY_PARTS)
     stats = {t: dict(flip=0, n=0, pf=[], p8=[]) for t in args.tags}
     for seed in args.seeds:
