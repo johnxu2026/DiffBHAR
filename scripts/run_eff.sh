@@ -5,7 +5,7 @@
 # tags:   b<NAME>/e2e (BHAR), fix<NAME>/e2e (fixed rule, no training), nn<NAME>/e2e (ours)
 cd "$(dirname "$0")/.." && source external/BHAR_codes_artifact/.venv/bin/activate
 eff=$1; n=$2
-export HARVEST_EFF=$eff CUDA_VISIBLE_DEVICES=3 OMP_NUM_THREADS=4
+export HARVEST_EFF=$eff CUDA_VISIBLE_DEVICES=${GPU:-0} OMP_NUM_THREADS=4
 for s in 0 1 2; do
   nohup bash scripts/bhar_posttrain.sh conservative $s scratch b$n/e2e > /dev/null 2>&1 &
   nohup bash -c "python scripts/bhar_e2e.py --init zero --init_theta 0 100 --epochs 0 --efficiency $eff --seed $s --tag fix$n/e2e \

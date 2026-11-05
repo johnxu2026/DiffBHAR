@@ -4,7 +4,7 @@
 # The policy still learns from loss_task only. BHAR then finetunes and evaluates as for nn100.
 # usage:  bash scripts/run_joint.sh [DATASET ...]      default pamap2;  tag: jnn100/e2e
 cd "$(dirname "$0")/.." && source external/BHAR_codes_artifact/.venv/bin/activate
-export CUDA_VISIBLE_DEVICES=3 OMP_NUM_THREADS=4
+export CUDA_VISIBLE_DEVICES=${GPU:-0} OMP_NUM_THREADS=4
 for d in ${@:-pamap2}; do
   for s in 0 1 2; do
     nohup bash -c "python scripts/bhar_e2e.py --dataset $d --policy neural --init zero --init_theta 0 100 --no_delta_grad \
