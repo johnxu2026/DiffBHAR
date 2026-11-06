@@ -78,9 +78,9 @@ def main():
         e, arr, _ = runs[name]
         pas = regions(y, arr)[a:b]
         yy = y[a:b]
-        ax[r].plot(t, yy, color="k", lw=1.5)
-        ax[r].scatter(t[~pas], yy[~pas], s=2, color="tab:green")
-        ax[r].scatter(t[pas], yy[pas], s=2, color="tab:red")
+        ax[r].plot(t, np.where(pas, np.nan, yy), color="tab:green", lw=5, alpha=.6, solid_capstyle="butt")
+        ax[r].plot(t, np.where(pas, yy, np.nan), color="tab:red", lw=5, alpha=.8, solid_capstyle="butt")
+        ax[r].plot(t, yy, color="k", lw=1)
         k = arr[(arr >= a) & (arr < b)]
         ax[r].scatter(k / fs, y[k] + 0.8, marker="v", color=col[name], s=18)
         ax[r].set_ylabel("activity")
