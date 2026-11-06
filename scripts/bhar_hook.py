@@ -40,8 +40,10 @@ def sparsify_data(self, policy, data):
                     policy_frequency=self.FS // self.policy_period, tx_thresh=self.thresh,
                     init_energy=self.init_energy)
     with torch.no_grad():
-        o = simulate(torch.tensor(self.e_harvest, dtype=torch.float64)[None], pol, cfg, train=False)
+        o = simulate(torch.tensor(self.e_harvest, dtype=torch.float64)[None], pol, cfg, train=False,
+                     record_energy=True)
     k = o.ticks[o.a[0] > 0.5].numpy()
+    self.e_trace = o.energy[0].numpy()          # energy per sample, as BHAR's own e_trace
     self.n_feasible = int(o.feasible.sum())   # decisions with E >= E_th (only these need the network)
     # a packet decided at step k covers samples k+1 .. k+w, as in BHAR's send_packet
     self.packet_idxs = np.stack([k + 1, k + 1 + self.packet_size]).T
