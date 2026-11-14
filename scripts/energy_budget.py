@@ -38,17 +38,24 @@ def main():
     ap.add_argument("--tags", nargs="*", default=["nn100/e2e", "jnn100/e2e"])
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--efficiency", type=float, default=0.5)
+    ap.add_argument("--heur_alpha", type=float, nargs="*", default=[],
+                    help="also replay the heuristic policy of [42] (BHAR Fig. 12) with these alphas")
     args = ap.parse_args()
     be.set_dataset(args.dataset)
     dirs = {"opportunistic": None}
     if args.efficiency == 0.5:
         dirs["BHAR"] = be.BHAR_POLICY
     dirs.update({t: be.out_policy_dir(t) for t in args.tags})
+    dirs.update({f"heuristic_{a}": "HEUR" for a in args.heur_alpha})
 
     cfg = be.SimConfig()
     ehs = be.EnergyHarvestingSensor(be.EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=args.efficiency),
                                     cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
                                     cfg.policy_frequency, cfg.init_energy)
+    from energy_harvesting.harvesting_sensor_heur import EnergyHarvestingSensor as HeurSensor
+    ehs_heur = HeurSensor(be.EnergyHarvester(tx_thresh=cfg.tx_thresh, efficiency=args.efficiency),
+                          cfg.packet_size, cfg.leakage, cfg.fs, cfg.max_energy,
+                          cfg.policy_frequency, cfg.init_energy)
     tot = {m: np.zeros(5) for m in dirs}    # summed J over seeds, subjects, sensors
     secs = {m: 0.0 for m in dirs}           # summed sensor-seconds
     dec = {m: 0 for m in dirs}              # network decisions (E >= E_th)
@@ -56,8 +63,11 @@ def main():
         for s in be.SUBJECTS:
             X, y = be.sequences(s, seed, test=True)[2]
             for m, d in dirs.items():
+                sensor = ehs_heur if d == "HEUR" else ehs
                 if d is None:
                     pol = {bp: "opportunistic" for bp in be.BODY_PARTS}
+                elif d == "HEUR":
+                    pol = {bp: m for bp in be.BODY_PARTS}
                 else:
                     p = os.path.join(d, f"policy_[{s}]_seed{seed}.pkl")
                     if not os.path.exists(p):
@@ -67,8 +77,8 @@ def main():
                     pol = {bp: f"conservative_{th[bp][0]}_{th[bp][1]}" if th[bp][0] == "neural"
                            else f"conservative_{float(th[bp][0])}_{float(th[bp][1])}" for bp in be.BODY_PARTS}
                 for i, bp in enumerate(be.BODY_PARTS):
-                    n = len(ehs.sparsify_data(pol[bp], X[i]))
-                    tot[m] += budget(ehs, n)
+                    n = len(sensor.sparsify_data(pol[bp], X[i]))
+                    tot[m] += budget(sensor, n)
                     secs[m] += len(X[i]) / cfg.fs
                     if pol[bp].startswith(bhar_hook.PREFIX):
                         dec[m] += ehs.n_feasible
