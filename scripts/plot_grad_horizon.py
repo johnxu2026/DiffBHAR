@@ -2,7 +2,7 @@
 
     python scripts/plot_grad_horizon.py ~/grad_horizon8.txt   ->  report/fig_grad_horizon.{pdf,png}
 
-Reader-first version: only timers that limit sending (theta_E = 100, 200); red dashed = without the
+Reader-first version: one timer that limits sending (theta_E = 200 samples = 8 s); red dashed = without the
 stop-gradient, blue solid = with it (ours); shaded zone where a gradient step is meaningless;
 direct labels instead of a legend. Median over subjects with min-max band.
 """
@@ -42,19 +42,15 @@ def curve(fix, th, color, ls, alpha_line=1.0):
 
 
 m200 = curve(False, 200, RED, "--")
-m100 = curve(False, 100, RED, ":", 0.8)
 f200 = curve(True, 200, BLUE, "-")
-curve(True, 100, BLUE, "-", 0.6)
-ax.text(115, 1e16, r"w/o stop-gradient, $\theta_\mathrm{E}=200$", ha="right", color=RED, fontsize=6.5)
-ax.annotate(r"w/o stop-gradient, $\theta_\mathrm{E}=100$", (lengths[-1], m100[-1]), xytext=(0, 5),
-            textcoords="offset points", ha="right", color=RED, fontsize=6.5)
-ax.annotate(r"with stop-gradient (ours), $\theta_\mathrm{E}=100, 200$", (lengths[-1], f200[-1]), xytext=(0, -10),
-            textcoords="offset points", ha="right", color=BLUE, fontsize=6.5)
+ax.text(115, 1e16, "without stop-gradient", ha="right", color=RED, fontsize=7)
+ax.annotate("with stop-gradient (ours)", (lengths[-1], f200[-1]), xytext=(0, 6),
+            textcoords="offset points", ha="right", color=BLUE, fontsize=7)
 ax.set_yscale("log")
 ax.set_ylim(1e-4, 1e26)
 ax.set_yticks([1e0, 1e5, 1e10, 1e15, 1e20, 1e25])
 ax.set_xlabel("length of training segment (s)")
-ax.set_ylabel("gradient magnitude\n" + r"$|\partial \mathcal{L}_\mathrm{task}/\partial\theta_\mathrm{E}|$ (log)")
+ax.set_ylabel("gradient magnitude (log scale)")
 ax.set_xticks(lengths)
 ax.set_xlim(lengths[0] - 5, lengths[-1] + 5)
 fig.tight_layout(pad=0.2)
