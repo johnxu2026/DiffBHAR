@@ -23,7 +23,7 @@ ART="$(cd "$(dirname "$0")/../external/BHAR_codes_artifact" && pwd)"
 pre=checkpoints/$dataset/tinyhar/multisensor_classifier_window_8_acc
 if [ ! -e "$ART/saved_data/$pre" ]; then
   mkdir -p "$(dirname "$ART/saved_data/$pre")"
-  ln -s "$ART/saved_data_cached/$pre" "$ART/saved_data/$pre"
+  ln -s "$ART/saved_data_cached/$pre" "$ART/saved_data/$pre" 2>/dev/null || true   # parallel seeds may race here
 fi
 cd "$ART/experiments"
 python train_har_policy_heur.py \
