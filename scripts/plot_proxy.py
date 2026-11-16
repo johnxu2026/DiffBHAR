@@ -26,8 +26,8 @@ dirs = sorted({os.path.dirname(p) for p in glob.glob(os.path.join(base, "**", "r
 rows = []
 for d in dirs:
     name = os.path.relpath(d, base)
-    if any(k in name for k in ("unconstrained", "ablation", "classifier")):
-        continue                                   # dense has no energy limit; not a policy
+    if any(k in name for k in ("unconstrained", "ablation", "classifier", "eff")):
+        continue                                   # dense: no energy limit; eff*: other harvest efficiency
     res = load(d)
     per_seed = np.stack([np.mean(list(r.values()), axis=0) for r in res.values()])
     acc, r_act = per_seed[:, 1].mean(), per_seed[:, 2].mean()
@@ -57,7 +57,7 @@ print(f"\n{len(rows)} runs  Spearman(R_active, acc) = {rho:.2f} (p = {p:.2g})")
 print(f"best proxy:    {best_r[0]}  R_active {best_r[3]:.3f}  acc {best_r[4]:.3f}")
 print(f"best accuracy: {best_a[0]}  R_active {best_a[3]:.3f}  acc {best_a[4]:.3f}")
 
-style = {"Fixed rule": ("o", "0.6", 3), "Other trained": ("o", "0.6", 3),
+style = {"Fixed rule": ("o", "0.6", 3), "Other trained": ("o", "0.75", 3),
          "Opportunistic": ("v", "k", 4), "Heuristic": ("D", "tab:green", 3.5),
          "BHAR (16x search)": ("*", "tab:orange", 6), "BHAR": ("*", "tab:red", 7), "Ours": ("s", "tab:blue", 4)}
 plt.rcParams.update({"font.size": 7, "font.family": "serif", "axes.linewidth": .6, "pdf.fonttype": 42})
@@ -66,9 +66,8 @@ for kind, (m, c, ms) in style.items():
     pts = [(r[3], r[4]) for r in rows if r[1] == kind]
     if pts:
         x, y = zip(*pts)
-        lab = "Other policies" if kind == "Other trained" else kind
-        ax.plot(x, y, m, color=c, ms=ms, ls="none", label=None if kind == "Other trained" and any(
-            r[1] == "Fixed rule" for r in rows) else lab, alpha=.8 if c == "0.6" else 1)
+        lab = "Other trained variants" if kind == "Other trained" else kind
+        ax.plot(x, y, m, color=c, ms=ms, ls="none", label=lab, alpha=.8 if c.startswith("0.") else 1)
 ax.set_xlabel("proxy reward of BHAR (active-region fraction)", labelpad=1)
 ax.set_ylabel("Accuracy", labelpad=1)
 ax.grid(alpha=.3, lw=.4); ax.tick_params(length=2, pad=1.5)
