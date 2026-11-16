@@ -26,8 +26,8 @@ dirs = sorted({os.path.dirname(p) for p in glob.glob(os.path.join(base, "**", "r
 rows = []
 for d in dirs:
     name = os.path.relpath(d, base)
-    if any(k in name for k in ("unconstrained", "ablation", "classifier", "eff")):
-        continue                                   # dense: no energy limit; eff*: other harvest efficiency
+    if any(k in name for k in ("unconstrained", "ablation", "classifier", "eff")) or name.startswith("joint_s50/"):
+        continue          # dense: no energy limit; eff*: other harvest efficiency; joint_s50: broken classifier
     res = load(d)
     per_seed = np.stack([np.mean(list(r.values()), axis=0) for r in res.values()])
     acc, r_act = per_seed[:, 1].mean(), per_seed[:, 2].mean()
@@ -56,12 +56,20 @@ best_r, best_a = rows[int(R.argmax())], rows[int(A.argmax())]
 print(f"\n{len(rows)} runs  Spearman(R_active, acc) = {rho:.2f} (p = {p:.2g})")
 print(f"best proxy:    {best_r[0]}  R_active {best_r[3]:.3f}  acc {best_r[4]:.3f}")
 print(f"best accuracy: {best_a[0]}  R_active {best_a[3]:.3f}  acc {best_a[4]:.3f}")
+HI = 0.79                                   # near-maximal proxy: where BHAR, the heuristic and ours lie
+top = R >= HI
+rho_hi, p_hi = spearmanr(R[top], A[top])
+print(f"R_active >= {HI}: {top.sum()} runs, acc {A[top].min():.3f}..{A[top].max():.3f}, "
+      f"Spearman {rho_hi:.2f} (p = {p_hi:.2g})")
 
 style = {"Fixed rule": ("o", "0.6", 3), "Other trained": ("o", "0.75", 3),
          "Opportunistic": ("v", "k", 4), "Heuristic": ("D", "tab:green", 3.5),
          "BHAR (16x search)": ("*", "tab:orange", 6), "BHAR": ("*", "tab:red", 7), "Ours": ("s", "tab:blue", 4)}
 plt.rcParams.update({"font.size": 7, "font.family": "serif", "axes.linewidth": .6, "pdf.fonttype": 42})
 fig, ax = plt.subplots(figsize=(3.45, 1.6))
+ax.axvspan(HI, R.max() + .005, color="0.93", lw=0)
+ax.text(HI + .001, A.min() + .002, f"here: $\\rho$ = {rho_hi:.2f}", fontsize=6, color="0.3")
+ax.text(R.min(), A.max() - .004, f"all: $\\rho$ = {rho:.2f}", fontsize=6, color="0.3", va="top")
 for kind, (m, c, ms) in style.items():
     pts = [(r[3], r[4]) for r in rows if r[1] == kind]
     if pts:
@@ -71,7 +79,8 @@ for kind, (m, c, ms) in style.items():
 ax.set_xlabel("proxy reward of BHAR (active-region fraction)", labelpad=1)
 ax.set_ylabel("Accuracy", labelpad=1)
 ax.grid(alpha=.3, lw=.4); ax.tick_params(length=2, pad=1.5)
-ax.legend(fontsize=5.5, frameon=False, loc="best", handletextpad=.3, labelspacing=.2, borderaxespad=.2)
+ax.set_xlim(R.min() - .005, R.max() + .005)
+ax.legend(fontsize=5.5, frameon=False, loc="upper left", bbox_to_anchor=(0, .86), handletextpad=.3, labelspacing=.2, borderaxespad=.2)
 fig.tight_layout(pad=.2)
 for e in ("pdf", "png"):
     fig.savefig(f"report/fig_proxy.{e}", dpi=300)
