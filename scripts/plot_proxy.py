@@ -62,14 +62,18 @@ rho_hi, p_hi = spearmanr(R[top], A[top])
 print(f"R_active >= {HI}: {top.sum()} runs, acc {A[top].min():.3f}..{A[top].max():.3f}, "
       f"Spearman {rho_hi:.2f} (p = {p_hi:.2g})")
 
+XMIN = 0.74                                 # zoom on the cloud; far-left policies noted, still in rho
+out = R < XMIN
+vis = ~out
+
 style = {"Fixed rule": ("o", "0.6", 3), "Other trained": ("o", "0.75", 3),
          "Opportunistic": ("v", "k", 4), "Heuristic": ("D", "tab:green", 3.5),
          "BHAR, 16x search": ("*", "tab:orange", 6), "BHAR": ("*", "tab:red", 7), "Ours": ("s", "tab:blue", 4)}
 plt.rcParams.update({"font.size": 7, "font.family": "serif", "axes.linewidth": .6, "pdf.fonttype": 42})
 fig, ax = plt.subplots(figsize=(3.45, 1.57))
 ax.axvspan(HI, R.max() + .005, color="0.93", lw=0)
-ax.text(R.max() + .004, A.min() + .002, f"$\\rho$ = {rho_hi:.2f}", fontsize=7, color="0.3", ha="right")
-ax.text(R.min(), A.max() - .004, f"all: $\\rho$ = {rho:.2f}", fontsize=7, color="0.3", va="top")
+ax.text(R.max() + .004, A[vis].min() - .006, f"$\\rho$ = {rho_hi:.2f}", fontsize=7, color="0.3", ha="right")
+ax.text(XMIN + .002, A.max() + .004, f"all: $\\rho$ = {rho:.2f}", fontsize=7, color="0.3", va="top")
 for kind, (m, c, ms) in style.items():
     pts = [(r[3], r[4]) for r in rows if r[1] == kind]
     if pts:
@@ -79,9 +83,11 @@ for kind, (m, c, ms) in style.items():
 ax.set_xlabel("proxy reward of BHAR (active-region fraction)", labelpad=1)
 ax.set_ylabel("Accuracy", labelpad=1)
 ax.grid(alpha=.3, lw=.4); ax.tick_params(length=2, pad=1.5)
-ax.set_xlim(R.min() - .005, R.max() + .005)
+ax.set_xlim(XMIN - .003, R.max() + .005)
+ax.set_ylim(A[vis].min() - .008, A[vis].max() + .008)
 fig.legend(fontsize=6, frameon=False, loc="upper center", ncol=4, bbox_to_anchor=(.5, 1.0), handletextpad=.2, columnspacing=.6, labelspacing=.2)
 fig.tight_layout(pad=.2, rect=(0, 0, 1, .80))
 for e in ("pdf", "png"):
     fig.savefig(f"report/fig_proxy.{e}", dpi=300)
+print(f"not plotted (proxy < {XMIN}, still in rho): {out.sum()} runs, acc {A[out].min():.3f}..{A[out].max():.3f}")
 print("-> report/fig_proxy.{pdf,png}")
