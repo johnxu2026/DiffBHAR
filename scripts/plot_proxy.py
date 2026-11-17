@@ -9,6 +9,7 @@ import glob
 import os
 
 import matplotlib
+import matplotlib.ticker
 import numpy as np
 from scipy.stats import spearmanr
 
@@ -81,13 +82,15 @@ for kind, (m, c, ms) in style.items():
         lab = "Trained variants" if kind == "Other trained" else kind
         ax.plot(x, y, m, color=c, ms=ms, ls="none", label=lab, alpha=.8 if c.startswith("0.") else 1)
 ax.set_xlabel("proxy reward of BHAR (active-region fraction)", labelpad=1)
-ax.set_ylabel("Accuracy", labelpad=1)
+ax.set_ylabel("Accuracy", labelpad=2)
+ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(.025))
+ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.3f"))
 ax.grid(alpha=.3, lw=.4); ax.tick_params(length=2, pad=1.5)
 ax.set_xlim(XMIN - .003, R.max() + .005)
 ax.set_ylim(A[vis].min() - .008, A[vis].max() + .008)
 fig.legend(fontsize=6, frameon=False, loc="upper center", ncol=4, bbox_to_anchor=(.5, 1.0), handletextpad=.2, columnspacing=.6, labelspacing=.2)
 fig.tight_layout(pad=.2, rect=(0, 0, 1, .80))
 for e in ("pdf", "png"):
-    fig.savefig(f"report/fig_proxy.{e}", dpi=300)
+    fig.savefig(f"report/fig_proxy.{e}", dpi=300, bbox_inches="tight", pad_inches=.02)
 print(f"not plotted (proxy < {XMIN}, still in rho): {out.sum()} runs, acc {A[out].min():.3f}..{A[out].max():.3f}")
 print("-> report/fig_proxy.{pdf,png}")
