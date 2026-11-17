@@ -27,6 +27,6 @@ leg = axs[0].legend(loc="lower right", fontsize=6, frameon=False, handletextpad=
 for t in leg.get_texts():
     if t.get_text() == "Ours":
         t.set_fontweight("bold")
-fig.tight_layout(pad=.2, w_pad=.6)
+fig.tight_layout(pad=.2, w_pad=1.3)
 for e in ("pdf", "png"):
     fig.savefig(f"report/fig_pareto_col.{e}", dpi=300, bbox_inches="tight", pad_inches=.02)
