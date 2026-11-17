@@ -39,7 +39,7 @@ for d in dirs:
     elif name.startswith("heuristic"):
         kind = "Heuristic"
     elif name.startswith("bhar512"):
-        kind = "BHAR, 16x search"
+        kind = "BHAR, 16$\\times$ search"
     elif name.startswith("jnn100/"):
         kind = "Ours"
     elif "notrain" in name:
@@ -69,7 +69,7 @@ vis = ~out
 
 style = {"Fixed rule": ("o", "0.6", 3), "Other trained": ("o", "0.75", 3),
          "Opportunistic": ("v", "k", 4), "Heuristic": ("D", "tab:green", 3.5),
-         "BHAR, 16x search": ("*", "tab:orange", 6), "BHAR": ("*", "tab:red", 7), "Ours": ("s", "tab:blue", 4)}
+         "BHAR, 16$\\times$ search": ("*", "tab:orange", 6), "BHAR": ("*", "tab:red", 7), "Ours": ("s", "tab:blue", 4)}
 plt.rcParams.update({"font.size": 7, "font.family": "serif", "axes.linewidth": .6, "pdf.fonttype": 42})
 fig, ax = plt.subplots(figsize=(3.45, 1.57))
 ax.axvspan(HI, R.max() + .005, color="0.93", lw=0)
