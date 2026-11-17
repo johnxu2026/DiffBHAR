@@ -15,7 +15,7 @@ fig, axs = plt.subplots(1, 2, figsize=(3.45, 1.4))
 for ax, (name, (fixed, ours, bhar)) in zip(axs, D.items()):
     f = np.array(sorted(fixed.values())); o = np.array(sorted(ours.values()))
     ax.errorbar(f[:,0], f[:,1], f[:,2], fmt="o-", color="0.45", ms=3, lw=1, capsize=1.5, elinewidth=.6, label="Fixed timer")
-    ax.errorbar(o[:,0], o[:,1], o[:,2], fmt="s-", color="tab:blue", ms=3, lw=1, capsize=1.5, elinewidth=.6, label="Ours (joint)")
+    ax.errorbar(o[:,0], o[:,1], o[:,2], fmt="s-", color="tab:blue", ms=3, lw=1, capsize=1.5, elinewidth=.6, label="Ours")
     for p, (x, y, _) in fixed.items():
         ax.annotate("", ours[p][:2], (x, y), arrowprops=dict(arrowstyle="->", color="tab:blue", alpha=.45, lw=.6))
     ax.errorbar(*bhar[:2], bhar[2], fmt="*", ms=6, color="tab:red", capsize=1.5, elinewidth=.6, label="BHAR")
@@ -23,7 +23,10 @@ for ax, (name, (fixed, ours, bhar)) in zip(axs, D.items()):
     ax.grid(alpha=.3, lw=.4); ax.tick_params(length=2, pad=1.5)
     ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(4))
 axs[0].set_ylabel("Accuracy", labelpad=1)
-axs[0].legend(loc="lower right", fontsize=6, frameon=False, handletextpad=.3, borderaxespad=.2, labelspacing=.2)
+leg = axs[0].legend(loc="lower right", fontsize=6, frameon=False, handletextpad=.3, borderaxespad=.2, labelspacing=.2)
+for t in leg.get_texts():
+    if t.get_text() == "Ours":
+        t.set_fontweight("bold")
 fig.tight_layout(pad=.2, w_pad=.6)
 for e in ("pdf", "png"):
-    fig.savefig(f"report/fig_pareto_col.{e}", dpi=300)
+    fig.savefig(f"report/fig_pareto_col.{e}", dpi=300, bbox_inches="tight", pad_inches=.02)
