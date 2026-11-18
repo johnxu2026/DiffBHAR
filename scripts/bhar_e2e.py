@@ -67,7 +67,9 @@ import argparse
 import copy
 import os
 import pickle
+import resource
 import sys
+import time
 
 import numpy as np
 import torch
@@ -337,6 +339,7 @@ def main():
     ap.add_argument("--tag", default="e2e", help="same TAG as for bhar_posttrain.sh")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
+    t_start = time.time()
     set_dataset(args.dataset)
     args.subjects = args.subjects or SUBJECTS
     N = len(BODY_PARTS)
@@ -531,6 +534,8 @@ def main():
         best_vals.append(best[0])
         logger.info(f"subject {s}: saved theta {saved} (val_acc {best[0]:.3f}, epoch {best[1]})")
     logger.info(f"mean best val_acc over subjects {args.subjects}: {np.mean(best_vals):.4f}")
+    logger.info(f"cost: wall time {(time.time() - t_start) / 60:.1f} min, "
+                f"peak memory (max RSS) {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB")
 
 
 if __name__ == "__main__":
